@@ -1,0 +1,35 @@
+site_name: Interview Arena Engineering Docs
+site_description: Software design and engineering documentation for Interview Arena
+site_url: ""
+
+theme:
+  name: material
+
+nav:
+  - Overview:
+      - Product Overview: 00-overview/product-overview.md
+  - Requirements:
+      - Requirements: 01-requirements/requirements.md
+  - Domain:
+      - Domain Model: 02-domain/domain-model.md
+  - Architecture:
+      - HLD: 03-architecture/hld.md
+  - Design:
+      - LLD / UML: 04-design/lld.md
+  - Database:
+      - Database Design / ERD: 05-database/database-design.md
+  - API:
+      - API Design: 06-api/api-design.md
+  - Real-Time:
+      - Real-Time Design: 07-realtime/realtime-design.md
+  - Security:
+      - Security Design: 08-security/security.md
+  - Testing:
+      - Testing Strategy: 09-testing/testing-strategy.md
+  - Deployment:
+      - Deployment: 10-deployment/deployment.md
+  - Architecture Decisions:
+      - ADR-001 Modular Monolith: decisions/ADR-001-modular-monolith.md
+      - ADR-002 PostgreSQL: decisions/ADR-002-postgresql.md
+      - ADR-003 Redis for Ephemeral Coordination: decisions/ADR-003-redis.md
+      - ADR-004 WebSockets: decisions/ADR-004-websockets.md

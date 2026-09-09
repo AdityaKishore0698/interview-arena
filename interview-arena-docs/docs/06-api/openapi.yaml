@@ -1,0 +1,82 @@
+openapi: 3.0.3
+info:
+  title: Interview Arena API
+  version: 1.0.0
+paths:
+  /api/v1/auth/guest:
+    post:
+      security: []
+      responses:
+        '200':
+          description: Guest identity created
+  /api/v1/rooms:
+    get:
+      responses:
+        '200':
+          description: Rooms returned
+  /api/v1/matchmaking/queues:
+    post:
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [roomId]
+              properties:
+                roomId:
+                  type: string
+                  example: dsa
+      responses:
+        '200':
+          description: Queue state returned
+        '409':
+          description: Queue conflict
+    delete:
+      responses:
+        '204':
+          description: Removed from queue
+  /api/v1/matchmaking/status:
+    get:
+      responses:
+        '200':
+          description: Matchmaking status
+  /api/v1/interview-sessions/{sessionId}:
+    get:
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '200':
+          description: Session returned
+        '404':
+          description: Not found
+  /api/v1/interview-sessions/{sessionId}/rounds/{roundId}/feedback:
+    post:
+      parameters:
+        - name: sessionId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: roundId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        '201':
+          description: Feedback accepted
+        '409':
+          description: Duplicate or invalid-state submission
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
