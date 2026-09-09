@@ -1,0 +1,16 @@
+README.md
+docs/00-overview/product-overview.md
+docs/01-requirements/requirements.md
+docs/02-domain/domain-model.md
+docs/03-architecture/hld.md
+docs/04-api/api-design.md
+docs/05-database/database-design.md
+docs/06-realtime/realtime-design.md
+docs/07-security/security.md
+docs/08-testing/testing-strategy.md
+docs/09-deployment/deployment.md
+docs/decisions/ADR-001-modular-monolith.md
+docs/decisions/ADR-002-postgresql.md
+docs/decisions/ADR-003-redis.md
+docs/decisions/ADR-004-websockets.md
+mkdocs.yml

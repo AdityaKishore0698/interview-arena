@@ -1,0 +1,3 @@
+learning-material/
+echo ".DS_Store" >> .gitignore
+echo "**/ .DS_Store" >> .gitignore
