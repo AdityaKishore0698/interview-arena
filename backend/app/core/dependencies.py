@@ -46,7 +46,7 @@ async def get_current_user(
         except ValueError:
             raise credentials_exception
         user = await user_repo.get_by_id(parsed_id)
-        if not user:
+        if not user or user.status != "ACTIVE":
             raise credentials_exception
         return {
             "id": str(user.id), 
