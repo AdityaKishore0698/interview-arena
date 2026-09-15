@@ -19,12 +19,24 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Optional: Intercept responses to handle global 401 unauthenticated
+// Requests where a 401 means "wrong credentials", not "your session expired" —
+// these happen while there's no active session yet, so they shouldn't show
+// the session-expired notice or clear a (nonexistent) session.
+const UNAUTHENTICATED_ROUTES = ['/api/v1/auth/login', '/api/v1/auth/guest'];
+
+// Intercept responses to handle global 401 unauthenticated
 api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      useAuth.getState().logout();
+      const url: string = error.config?.url || '';
+      const isAuthAttempt = UNAUTHENTICATED_ROUTES.some((path) => url.includes(path));
+      const hadSession = !!useAuth.getState().token;
+      if (!isAuthAttempt && hadSession) {
+        useAuth.getState().logoutWithNotice('Your session has expired. Please sign in again.');
+      } else {
+        useAuth.getState().logout();
+      }
     }
     return Promise.reject(error);
   }

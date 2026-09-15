@@ -13,19 +13,24 @@ type Scores = {
 // Hoisted outside component — prevents re-creation during render
 function RatingRow({
   label,
+  hint,
   field,
   scores,
   onSelect,
 }: {
   label: string;
+  hint?: string;
   field: keyof Scores;
   scores: Scores;
   onSelect: (field: keyof Scores, val: number) => void;
 }) {
   return (
-    <div className="flex items-center justify-between p-4 bg-surface hover:bg-surface/80 transition-colors rounded-2xl">
-      <span className="text-base font-medium tracking-tight text-foreground">{label}</span>
-      <div className="flex space-x-2" role="radiogroup" aria-label={label}>
+    <div className="flex items-center justify-between gap-4 p-4 bg-surface hover:bg-surface/80 transition-colors rounded-2xl">
+      <div>
+        <span className="text-base font-medium tracking-tight text-foreground">{label}</span>
+        {hint && <p className="mt-0.5 text-xs text-muted-foreground">{hint}</p>}
+      </div>
+      <div className="flex shrink-0 space-x-2" role="radiogroup" aria-label={label}>
         {[1, 2, 3, 4, 5].map((val) => (
           <button
             key={val}
@@ -47,7 +52,21 @@ function RatingRow({
   );
 }
 
+const RUBRIC_HINTS: Record<string, { communication: string; technicalKnowledge: string; problemSolving: string }> = {
+  Interviewer: {
+    communication: 'How clearly did they explain the problem and guide the conversation?',
+    technicalKnowledge: 'Did they know the problem space well enough to field follow-up questions?',
+    problemSolving: 'Quality of their hints and guidance when you got stuck.',
+  },
+  Interviewee: {
+    communication: 'How clearly did they explain their thinking out loud?',
+    technicalKnowledge: 'Depth of relevant technical knowledge they demonstrated.',
+    problemSolving: 'Approach, structure, and correctness of their solution.',
+  },
+};
+
 export function FeedbackForm({ sessionId, roundId, evaluatedRole, roundLabel }: { sessionId: string; roundId: string, evaluatedRole: string, roundLabel: string }) {
+  const hints = RUBRIC_HINTS[evaluatedRole] ?? RUBRIC_HINTS.Interviewee;
   const [scores, setScores] = useState<Scores>({
     communication: 0,
     technicalKnowledge: 0,
@@ -111,9 +130,9 @@ export function FeedbackForm({ sessionId, roundId, evaluatedRole, roundLabel }: 
       </header>
 
       <div className="space-y-4 mb-10">
-        <RatingRow label="Communication" field="communication" scores={scores} onSelect={handleSelect} />
-        <RatingRow label="Technical Knowledge" field="technicalKnowledge" scores={scores} onSelect={handleSelect} />
-        <RatingRow label="Problem Solving" field="problemSolving" scores={scores} onSelect={handleSelect} />
+        <RatingRow label="Communication" hint={hints.communication} field="communication" scores={scores} onSelect={handleSelect} />
+        <RatingRow label="Technical Knowledge" hint={hints.technicalKnowledge} field="technicalKnowledge" scores={scores} onSelect={handleSelect} />
+        <RatingRow label="Problem Solving" hint={hints.problemSolving} field="problemSolving" scores={scores} onSelect={handleSelect} />
       </div>
       
       <div className="space-y-3 mb-10">

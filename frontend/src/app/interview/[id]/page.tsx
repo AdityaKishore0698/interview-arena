@@ -446,11 +446,13 @@ export default function InterviewPage() {
                 remoteStream={webrtc.remoteStream}
                 connected={webrtc.connected}
                 callRequested={webrtc.callRequested}
+                connectFailed={webrtc.connectFailed}
                 mediaError={webrtc.mediaError}
                 hasMedia={webrtc.hasMedia}
                 audioEnabled={webrtc.audioEnabled}
                 videoEnabled={webrtc.videoEnabled}
                 onStartCall={webrtc.startCall}
+                onRetry={webrtc.retryConnection}
                 onToggleAudio={webrtc.toggleAudio}
                 onToggleVideo={webrtc.toggleVideo}
               />

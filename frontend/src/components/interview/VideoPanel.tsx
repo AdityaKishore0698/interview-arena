@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { Camera, CameraOff, Loader2, Mic, MicOff, Video } from 'lucide-react';
+import { AlertCircle, Camera, CameraOff, Loader2, Mic, MicOff, Video } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 interface VideoPanelProps {
@@ -9,11 +9,13 @@ interface VideoPanelProps {
   remoteStream: MediaStream | null;
   connected: boolean;
   callRequested: boolean;
+  connectFailed: boolean;
   mediaError: string | null;
   hasMedia: boolean;
   audioEnabled: boolean;
   videoEnabled: boolean;
   onStartCall: () => void;
+  onRetry: () => void;
   onToggleAudio: () => void;
   onToggleVideo: () => void;
 }
@@ -23,11 +25,13 @@ export function VideoPanel({
   remoteStream,
   connected,
   callRequested,
+  connectFailed,
   mediaError,
   hasMedia,
   audioEnabled,
   videoEnabled,
   onStartCall,
+  onRetry,
   onToggleAudio,
   onToggleVideo,
 }: VideoPanelProps) {
@@ -66,7 +70,9 @@ export function VideoPanel({
         ) : (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 px-4 text-center">
             <div className="flex h-14 w-14 items-center justify-center rounded-full bg-surface/20 backdrop-blur-md">
-              {callRequested && !mediaError ? (
+              {connectFailed ? (
+                <AlertCircle className="h-5 w-5 text-destructive" />
+              ) : callRequested && !mediaError ? (
                 <Loader2 className="h-5 w-5 animate-spin text-muted-foreground" />
               ) : (
                 <Video className="h-5 w-5 text-muted-foreground" />
@@ -75,10 +81,17 @@ export function VideoPanel({
             <p className="max-w-[220px] text-[11px] font-medium uppercase tracking-widest text-muted-foreground">
               {mediaError
                 ? `Media unavailable: ${mediaError}`
-                : callRequested
-                  ? 'Connecting…'
-                  : 'Waiting for opponent...'}
+                : connectFailed
+                  ? "Couldn't connect. Check your network and retry."
+                  : callRequested
+                    ? 'Connecting…'
+                    : 'Waiting for opponent...'}
             </p>
+            {connectFailed && !mediaError && (
+              <Button onClick={onRetry} variant="outline" size="sm" className="border-border/30 bg-background/20 backdrop-blur-md">
+                Retry Connection
+              </Button>
+            )}
             {!callRequested && !mediaError && (
               <Button
                 onClick={onStartCall}
