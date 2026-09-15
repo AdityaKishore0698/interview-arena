@@ -298,13 +298,22 @@ export default function DashboardPage() {
               </div>
 
 
-            {/* History Section — registered users only */}
-            {user.type === 'REGISTERED' && (
+            {/* History Section */}
             <section className="space-y-4 mt-16 pt-8 border-t border-border/40">
               <h2 className="text-sm font-semibold tracking-widest text-muted-foreground uppercase flex items-center">
                 <span className="w-6 h-px bg-border mr-4"></span> Recent Interviews
               </h2>
-              {historyLoading ? (
+              {user.type !== 'REGISTERED' ? (
+                <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border/50 bg-surface/30 p-8 text-center">
+                  <p className="text-foreground">Guest sessions don&apos;t save history.</p>
+                  <p className="text-sm text-muted-foreground max-w-sm">
+                    Create a free account to keep every round&apos;s feedback and revisit it here later.
+                  </p>
+                  <Button variant="outline" size="sm" onClick={() => router.push('/?mode=register')} className="mt-1">
+                    Create a free account
+                  </Button>
+                </div>
+              ) : historyLoading ? (
                  <div className="flex items-center space-x-3 text-muted-foreground py-4">
                     <Loader2 className="h-5 w-5 animate-spin" />
                     <span>Loading history...</span>
@@ -372,7 +381,6 @@ export default function DashboardPage() {
                 </div>
               )}
             </section>
-            )}
 
           </div>
         )}
