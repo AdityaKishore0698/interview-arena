@@ -1,20 +1,35 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query, Request
+import os
+import random
+import uuid
+
+import httpx
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
-import httpx
-import uuid
-import random
 
 from ..core.config import settings
 from ..core.database import get_db
-from ..core.exceptions import EmailAlreadyExistsError
+from ..core.dependencies import get_current_user
+from ..core.email import send_email
+from ..core.exceptions import (
+    AccountDisabledError,
+    EmailAlreadyExistsError,
+    InvalidCredentialsError,
+)
 from ..core.redis import get_redis
 from .repository import UserRepository
-from .schemas import GuestAuthResponse, Token, UserCreate, UserLogin
+from .schemas import (
+    ChangePasswordRequest,
+    ForgotPasswordRequest,
+    GuestAuthResponse,
+    ResetPasswordRequest,
+    Token,
+    UpdateProfileRequest,
+    UserCreate,
+    UserLogin,
+)
 from .service import AuthService
-from ..core.dependencies import get_current_user
-import os
 
 is_testing = os.environ.get("TESTING", "").lower() == "true"
 
@@ -51,9 +66,11 @@ async def login(
         user = await auth_service.authenticate_user(user_data)
         if not user:
             raise HTTPException(status_code=401, detail="Invalid credentials")
+    except AccountDisabledError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
-        
+
     access_token = auth_service.create_access_token({"sub": str(user.id), "type": "REGISTERED"})
     return {"access_token": access_token, "token_type": "bearer"}
 
@@ -76,6 +93,72 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 async def logout(
     current_user: dict = Depends(get_current_user), redis: Redis = Depends(get_redis)
 ):
+    user_id = current_user["id"]
+    await redis.delete(f"active_match:{user_id}")
+    await redis.delete(f"current_queue:{user_id}")
+    return {"status": "success"}
+
+
+@router.patch("/me")
+async def update_profile(
+    body: UpdateProfileRequest,
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if current_user["type"] != "REGISTERED":
+        raise HTTPException(status_code=403, detail="Guests have no profile to update")
+    display_name = body.display_name.strip()
+    if not display_name:
+        raise HTTPException(status_code=400, detail="Display name cannot be empty")
+
+    user_repo = UserRepository(db)
+    user = await user_repo.get_by_id(uuid.UUID(current_user["id"]))
+    if not user or not user.profile:
+        raise HTTPException(status_code=404, detail="User not found")
+    user.profile.display_name = display_name
+    await db.commit()
+    return {"status": "success", "display_name": display_name}
+
+
+@router.post("/password/change", status_code=status.HTTP_200_OK)
+async def change_password(
+    body: ChangePasswordRequest,
+    current_user: dict = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service),
+    db: AsyncSession = Depends(get_db),
+):
+    if current_user["type"] != "REGISTERED":
+        raise HTTPException(status_code=403, detail="Guests cannot change a password")
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+
+    user = await auth_service.user_repo.get_by_id(uuid.UUID(current_user["id"]))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    try:
+        await auth_service.change_password(user, body.current_password, body.new_password)
+    except InvalidCredentialsError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    await db.commit()
+    return {"status": "success"}
+
+
+@router.delete("/me", status_code=status.HTTP_200_OK)
+async def delete_account(
+    current_user: dict = Depends(get_current_user),
+    auth_service: AuthService = Depends(get_auth_service),
+    db: AsyncSession = Depends(get_db),
+    redis: Redis = Depends(get_redis),
+):
+    if current_user["type"] != "REGISTERED":
+        raise HTTPException(status_code=403, detail="Guest sessions expire on their own — nothing to delete")
+
+    user = await auth_service.user_repo.get_by_id(uuid.UUID(current_user["id"]))
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    await auth_service.delete_account(user)
+    await db.commit()
+
     user_id = current_user["id"]
     await redis.delete(f"active_match:{user_id}")
     await redis.delete(f"current_queue:{user_id}")
@@ -146,7 +229,7 @@ async def google_callback(
     # Find or create user
     user = await auth_service.user_repo.get_by_email(email)
     if not user:
-        from .models import User, Profile
+        from .models import Profile, User
 
         user = User(
             email=email, auth_provider="google", is_verified=True, password_hash=None
@@ -188,14 +271,52 @@ async def send_otp(
 
     otp = "123456" if is_testing else str(random.randint(100000, 999999))
 
-    # In production, send via SES/SendGrid. For now, print.
-    print(f"OTP for {email}: {otp}")
+    if not is_testing:
+        await send_email(
+            email,
+            "Your Interview Arena verification code",
+            f"Your verification code is {otp}. It expires in 5 minutes.\n\n"
+            "If you didn't request this, you can safely ignore this email.",
+        )
 
     await redis.setex(f"otp:{email}", 300, otp)
     # Store pending registration data temporarily
     await redis.setex(f"pending_reg:{email}", 300, json.dumps(data))
 
     return {"status": "sent"}
+
+
+@router.post("/password/forgot", status_code=status.HTTP_200_OK)
+async def forgot_password(
+    body: ForgotPasswordRequest,
+    auth_service: AuthService = Depends(get_auth_service),
+):
+    code = await auth_service.request_password_reset(body.email)
+    if code and not is_testing:
+        await send_email(
+            body.email,
+            "Reset your Interview Arena password",
+            f"Your password reset code is {code}. It expires in 15 minutes.\n\n"
+            "If you didn't request this, you can safely ignore this email.",
+        )
+    # Always the same response — don't reveal whether the email is registered.
+    return {"status": "sent"}
+
+
+@router.post("/password/reset", status_code=status.HTTP_200_OK)
+async def reset_password(
+    body: ResetPasswordRequest,
+    auth_service: AuthService = Depends(get_auth_service),
+    db: AsyncSession = Depends(get_db),
+):
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+    try:
+        await auth_service.reset_password(body.email, body.otp, body.new_password)
+    except InvalidCredentialsError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    await db.commit()
+    return {"status": "success"}
 
 
 import json
