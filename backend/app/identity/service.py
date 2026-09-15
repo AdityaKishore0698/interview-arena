@@ -4,7 +4,11 @@ from datetime import UTC, datetime, timedelta
 import jwt
 
 from ..core.config import settings
-from ..core.exceptions import EmailAlreadyExistsError
+from ..core.exceptions import (
+    AccountDisabledError,
+    EmailAlreadyExistsError,
+    InvalidCredentialsError,
+)
 from ..core.security import get_password_hash, verify_password
 from .models import Profile, User
 from .repository import UserRepository
@@ -43,6 +47,8 @@ class AuthService:
         user = await self.user_repo.get_by_email(user_data.email)
         if not user:
             return None
+        if user.status != "ACTIVE":
+            raise AccountDisabledError("This account has been deleted")
         if not user.password_hash or not verify_password(user_data.password, user.password_hash):
             return None
         if not user.is_verified:
@@ -56,3 +62,42 @@ class AuthService:
         # Store in Redis with TTL 24 hours (86400 seconds)
         await self.redis_client.set(f"session:{guest_id}", '{"type": "GUEST"}', ex=86400)
         return guest_id
+
+    async def request_password_reset(self, email: str) -> str | None:
+        """Generate and store a reset code. Returns the code, or None if the
+        account can't receive one (unknown email / OAuth-only account) — the
+        caller must still respond as if an email was sent, to avoid leaking
+        which emails are registered."""
+        user = await self.user_repo.get_by_email(email)
+        if not user or user.status != "ACTIVE":
+            return None
+        import random
+        code = str(random.randint(100000, 999999))
+        await self.redis_client.setex(f"pwreset:{email}", 900, code)
+        return code
+
+    async def reset_password(self, email: str, otp: str, new_password: str) -> None:
+        stored = await self.redis_client.get(f"pwreset:{email}")
+        if not stored or stored != otp:
+            raise InvalidCredentialsError("Invalid or expired code")
+        user = await self.user_repo.get_by_email(email)
+        if not user or user.status != "ACTIVE":
+            raise InvalidCredentialsError("Invalid or expired code")
+        user.password_hash = get_password_hash(new_password)
+        await self.redis_client.delete(f"pwreset:{email}")
+
+    async def change_password(self, user: User, current_password: str | None, new_password: str) -> None:
+        if user.password_hash and (not current_password or not verify_password(current_password, user.password_hash)):
+            raise InvalidCredentialsError("Current password is incorrect")
+        # OAuth-only accounts (no password_hash yet) may set an initial password.
+        user.password_hash = get_password_hash(new_password)
+
+    async def delete_account(self, user: User) -> None:
+        """Soft-delete: interview history/feedback referencing this user must
+        survive (FKs have no cascade), so we deactivate + anonymize instead of
+        removing the row."""
+        user.status = "DELETED"
+        user.email = f"deleted-{user.id}@deleted.invalid"
+        user.password_hash = None
+        if user.profile:
+            user.profile.display_name = "Deleted User"
