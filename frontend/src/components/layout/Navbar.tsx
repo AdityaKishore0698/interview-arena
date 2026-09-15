@@ -2,7 +2,7 @@
 
 import { useAuth } from '@/store/useAuth';
 import { Button } from '@/components/ui/button';
-import { LogOut } from 'lucide-react';
+import { LogOut, UserCog } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { ThemeToggle } from './ThemeToggle';
 
@@ -43,6 +43,15 @@ export default function Navbar() {
               <span className="text-sm font-medium text-foreground">{user.display_name || 'Guest'}</span>
               <span className="mt-1 text-[10px] uppercase tracking-wider text-muted-foreground">{user.type}</span>
             </div>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => router.push('/account')}
+              title="Account Settings"
+              className="rounded-full text-muted-foreground transition-all hover:bg-surface hover:text-foreground"
+            >
+              <UserCog className="h-4 w-4" />
+            </Button>
             <Button
               variant="ghost"
               size="icon"

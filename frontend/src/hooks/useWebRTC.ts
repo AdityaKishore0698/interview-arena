@@ -37,13 +37,39 @@ interface UseWebRTCArgs {
   sendSignal: (signal: RtcSignal) => void;
 }
 
-const ICE_SERVERS: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
+const CONNECT_TIMEOUT_MS = 20000;
+
+/**
+ * STUN is always available. TURN is optional and provider-specific — set
+ * NEXT_PUBLIC_TURN_URL (comma-separated for multiple transports),
+ * NEXT_PUBLIC_TURN_USERNAME and NEXT_PUBLIC_TURN_CREDENTIAL to enable it.
+ * Without TURN, peers behind symmetric NAT / restrictive firewalls may be
+ * unable to connect directly — that's what the connect-timeout/retry path
+ * below surfaces to the user instead of hanging forever.
+ */
+function buildIceServers(): RTCIceServer[] {
+  const servers: RTCIceServer[] = [{ urls: 'stun:stun.l.google.com:19302' }];
+  const turnUrls = process.env.NEXT_PUBLIC_TURN_URL;
+  const turnUsername = process.env.NEXT_PUBLIC_TURN_USERNAME;
+  const turnCredential = process.env.NEXT_PUBLIC_TURN_CREDENTIAL;
+  if (turnUrls) {
+    servers.push({
+      urls: turnUrls.split(',').map((u) => u.trim()).filter(Boolean),
+      username: turnUsername,
+      credential: turnCredential,
+    });
+  }
+  return servers;
+}
+
+const ICE_SERVERS: RTCIceServer[] = buildIceServers();
 
 export function useWebRTC({ enabled, isOfferer, sessionId, sendSignal }: UseWebRTCArgs) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
   const [remoteStream, setRemoteStream] = useState<MediaStream | null>(null);
   const [connected, setConnected] = useState(false);
   const [callRequested, setCallRequested] = useState(false);
+  const [connectFailed, setConnectFailed] = useState(false);
   const [mediaError, setMediaError] = useState<string | null>(null);
   const [audioEnabled, setAudioEnabled] = useState(true);
   const [videoEnabled, setVideoEnabled] = useState(true);
@@ -66,8 +92,25 @@ export function useWebRTC({ enabled, isOfferer, sessionId, sendSignal }: UseWebR
   const callActiveRef = useRef(false);
   const pendingIce = useRef<{ negId: string; candidate: RTCIceCandidateInit }[]>([]);
   const mediaStartedRef = useRef(false);
+  const connectTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const storageKey = `arena.call.${sessionId}`;
+
+  /** Start (or restart) the "did we actually connect?" watchdog. */
+  const armConnectTimeout = useCallback(() => {
+    setConnectFailed(false);
+    if (connectTimeoutRef.current) clearTimeout(connectTimeoutRef.current);
+    connectTimeoutRef.current = setTimeout(() => {
+      setConnectFailed(true);
+    }, CONNECT_TIMEOUT_MS);
+  }, []);
+
+  const clearConnectTimeout = useCallback(() => {
+    if (connectTimeoutRef.current) {
+      clearTimeout(connectTimeoutRef.current);
+      connectTimeoutRef.current = null;
+    }
+  }, []);
 
   const flushPendingIce = useCallback(async () => {
     const pc = pcRef.current;
@@ -138,12 +181,16 @@ export function useWebRTC({ enabled, isOfferer, sessionId, sendSignal }: UseWebR
 
     pc.onconnectionstatechange = () => {
       const state = pc.connectionState;
-      if (state === 'connected') setConnected(true);
+      if (state === 'connected') {
+        setConnected(true);
+        clearConnectTimeout();
+      }
       if (state === 'failed' || state === 'disconnected' || state === 'closed') {
         setConnected(false);
         // If the peer dropped (e.g. reloaded) mid-call, the offerer re-negotiates
         // with an ICE restart so media re-establishes without a manual reconnect.
         if ((state === 'failed' || state === 'disconnected') && callActiveRef.current && isOffererRef.current) {
+          armConnectTimeout();
           window.setTimeout(() => {
             if (pcRef.current === pc && pc.connectionState !== 'connected') {
               void maybeNegotiate({ iceRestart: true });
@@ -166,7 +213,7 @@ export function useWebRTC({ enabled, isOfferer, sessionId, sendSignal }: UseWebR
       }
     }
     return pc;
-  }, [maybeNegotiate]);
+  }, [maybeNegotiate, armConnectTimeout, clearConnectTimeout]);
 
   const acquireMedia = useCallback(async () => {
     if (mediaStartedRef.current) return;
@@ -220,10 +267,12 @@ export function useWebRTC({ enabled, isOfferer, sessionId, sendSignal }: UseWebR
     makingOfferRef.current = false;
     pendingIce.current = [];
     mediaStartedRef.current = false;
+    clearConnectTimeout();
     setLocalStream(null);
     setRemoteStream(null);
     setConnected(false);
-  }, []);
+    setConnectFailed(false);
+  }, [clearConnectTimeout]);
 
   // Lifecycle: bring media + PC up while the session is live, tear down otherwise.
   useEffect(() => {
@@ -243,6 +292,7 @@ export function useWebRTC({ enabled, isOfferer, sessionId, sendSignal }: UseWebR
     if (resume) {
       callActiveRef.current = true;
       setCallRequested(true);
+      armConnectTimeout();
       sendSignalRef.current({ kind: 'call' });
       void maybeNegotiate();
     }
@@ -263,6 +313,7 @@ export function useWebRTC({ enabled, isOfferer, sessionId, sendSignal }: UseWebR
         if (signal.kind === 'call') {
           callActiveRef.current = true;
           setCallRequested(true);
+          armConnectTimeout();
           void maybeNegotiate();
           return;
         }
@@ -277,6 +328,7 @@ export function useWebRTC({ enabled, isOfferer, sessionId, sendSignal }: UseWebR
           if (answeredNegIdRef.current === signal.negId) return; // duplicate offer
           callActiveRef.current = true;
           setCallRequested(true);
+          armConnectTimeout();
           negIdRef.current = signal.negId;
           await pc.setRemoteDescription(new RTCSessionDescription(signal.sdp));
           await flushPendingIce();
@@ -315,12 +367,13 @@ export function useWebRTC({ enabled, isOfferer, sessionId, sendSignal }: UseWebR
         console.error('[webrtc] error handling signal', signal.kind, err);
       }
     },
-    [ensurePeer, flushPendingIce, maybeNegotiate],
+    [ensurePeer, flushPendingIce, maybeNegotiate, armConnectTimeout],
   );
 
   const startCall = useCallback(() => {
     callActiveRef.current = true;
     setCallRequested(true);
+    armConnectTimeout();
     try {
       sessionStorage.setItem(storageKey, '1');
     } catch {
@@ -329,7 +382,29 @@ export function useWebRTC({ enabled, isOfferer, sessionId, sendSignal }: UseWebR
     ensurePeer();
     sendSignalRef.current({ kind: 'call' });
     void maybeNegotiate();
-  }, [ensurePeer, maybeNegotiate, storageKey]);
+  }, [ensurePeer, maybeNegotiate, storageKey, armConnectTimeout]);
+
+  /**
+   * Used after a connection attempt times out. Unlike startCall, this fully
+   * rebuilds the peer connection instead of reusing it — the previous
+   * negotiation may be permanently stuck (e.g. an offer that never received
+   * an answer), where simply calling maybeNegotiate() again would silently
+   * no-op because the signaling state never returned to "stable".
+   */
+  const retryConnection = useCallback(() => {
+    teardown();
+    callActiveRef.current = true;
+    setCallRequested(true);
+    armConnectTimeout();
+    try {
+      sessionStorage.setItem(storageKey, '1');
+    } catch {
+      /* storage unavailable */
+    }
+    ensurePeer();
+    void acquireMedia();
+    sendSignalRef.current({ kind: 'call' });
+  }, [teardown, ensurePeer, acquireMedia, storageKey, armConnectTimeout]);
 
   const toggleAudio = useCallback(() => {
     const track = localStreamRef.current?.getAudioTracks()[0];
@@ -350,12 +425,14 @@ export function useWebRTC({ enabled, isOfferer, sessionId, sendSignal }: UseWebR
     remoteStream,
     connected,
     callRequested,
+    connectFailed,
     mediaError,
     audioEnabled,
     videoEnabled,
     hasMedia: !!localStream,
     handleSignal,
     startCall,
+    retryConnection,
     toggleAudio,
     toggleVideo,
   };

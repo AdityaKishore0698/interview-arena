@@ -2,6 +2,7 @@ import type { Metadata, Viewport } from 'next';
 import { Inter, JetBrains_Mono } from 'next/font/google';
 import './globals.css';
 import QueryProvider from '@/providers/QueryProvider';
+import { AuthNotice } from '@/components/layout/AuthNotice';
 
 const inter = Inter({
   subsets: ['latin'],
@@ -60,7 +61,10 @@ export default function RootLayout({
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
       <body className="ambient min-h-screen text-foreground antialiased">
-        <QueryProvider>{children}</QueryProvider>
+        <QueryProvider>
+          <AuthNotice />
+          {children}
+        </QueryProvider>
       </body>
     </html>
   );
