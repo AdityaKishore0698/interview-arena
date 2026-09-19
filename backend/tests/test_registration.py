@@ -1,8 +1,9 @@
 """Email/password signup is a single step: the account exists and the caller
 is signed in as soon as /register returns. No OTP, no email, no verification."""
+import importlib.util
 import smtplib
 import uuid
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import jwt
 import pytest
@@ -79,15 +80,13 @@ async def test_signup_generates_no_otp(client: AsyncClient, redis):
 
 async def test_signup_sends_no_email(client: AsyncClient):
     with (
-        patch("app.identity.router.send_email", new_callable=AsyncMock) as send_email,
-        patch("app.core.email.send_email", new_callable=AsyncMock) as core_send_email,
         patch.object(smtplib, "SMTP", side_effect=AssertionError("SMTP must not be used at signup")),
         patch.object(smtplib, "SMTP_SSL", side_effect=AssertionError("SMTP must not be used at signup")),
     ):
         res = await client.post("/api/v1/auth/register", json=_payload())
     assert res.status_code == 201
-    send_email.assert_not_called()
-    core_send_email.assert_not_called()
+    # There is no email module to call any more.
+    assert importlib.util.find_spec("app.core.email") is None
 
 
 @pytest.mark.parametrize("path", ["/api/v1/auth/otp/send", "/api/v1/auth/otp/verify"])

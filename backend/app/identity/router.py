@@ -11,7 +11,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from ..core.config import settings
 from ..core.database import get_db
 from ..core.dependencies import get_current_user
-from ..core.email import send_email
 from ..core.exceptions import (
     AccountDisabledError,
     EmailAlreadyExistsError,
@@ -29,7 +28,7 @@ from .schemas import (
     UserCreate,
     UserLogin,
 )
-from .service import AuthService
+from .service import RESET_CODE_TTL_SECONDS, AuthService
 
 is_testing = os.environ.get("TESTING", "").lower() == "true"
 
@@ -268,16 +267,24 @@ async def forgot_password(
     body: ForgotPasswordRequest,
     auth_service: AuthService = Depends(get_auth_service),
 ):
+    """DEMO password recovery — no email is sent.
+
+    The reset code is returned in the response so the UI can show it directly.
+    This is intentionally not production-grade recovery: anyone who knows an
+    account's email can obtain a code for it.
+    """
     code = await auth_service.request_password_reset(body.email)
-    if code and not is_testing:
-        await send_email(
-            body.email,
-            "Reset your Interview Arena password",
-            f"Your password reset code is {code}. It expires in 15 minutes.\n\n"
-            "If you didn't request this, you can safely ignore this email.",
-        )
-    # Always the same response — don't reveal whether the email is registered.
-    return {"status": "sent"}
+    if code is None:
+        # Unknown / non-resettable account: hand back an equally-shaped decoy
+        # (never stored, so it can't be redeemed) so the response doesn't
+        # reveal which emails are registered.
+        code = auth_service.generate_reset_code()
+    return {
+        "status": "demo",
+        "demo_code": code,
+        "expires_in": RESET_CODE_TTL_SECONDS,
+        "notice": "DEMO recovery: no email is sent. Use this code on the reset screen.",
+    }
 
 
 @router.post("/password/reset", status_code=status.HTTP_200_OK)

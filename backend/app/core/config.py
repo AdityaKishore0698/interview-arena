@@ -59,15 +59,6 @@ class Settings(BaseSettings):
     # URI" configured on the Google OAuth client.
     BACKEND_URL: str = "http://localhost:8000"
 
-    # Outbound email (password-reset codes only). Leave SMTP_HOST empty to fall
-    # back to console logging — no setup required for local dev.
-    SMTP_HOST: str = ""
-    SMTP_PORT: int = 587
-    SMTP_USER: str = ""
-    SMTP_PASSWORD: str = ""
-    SMTP_FROM: str = ""
-    SMTP_USE_TLS: bool = True
-
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @field_validator("DATABASE_URL", mode="after")

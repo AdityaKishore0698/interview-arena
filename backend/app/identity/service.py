@@ -1,3 +1,4 @@
+import random
 import uuid
 from datetime import UTC, datetime, timedelta
 
@@ -13,6 +14,8 @@ from ..core.security import get_password_hash, verify_password
 from .models import Profile, User
 from .repository import UserRepository
 from .schemas import UserCreate, UserLogin
+
+RESET_CODE_TTL_SECONDS = 900
 
 
 class AuthService:
@@ -66,16 +69,19 @@ class AuthService:
 
     async def request_password_reset(self, email: str) -> str | None:
         """Generate and store a reset code. Returns the code, or None if the
-        account can't receive one (unknown email / OAuth-only account) — the
-        caller must still respond as if an email was sent, to avoid leaking
-        which emails are registered."""
+        account can't receive one (unknown or deleted account) — the caller
+        must still respond in the same shape, to avoid leaking which emails
+        are registered."""
         user = await self.user_repo.get_by_email(email)
         if not user or user.status != "ACTIVE":
             return None
-        import random
-        code = str(random.randint(100000, 999999))
-        await self.redis_client.setex(f"pwreset:{email}", 900, code)
+        code = self.generate_reset_code()
+        await self.redis_client.setex(f"pwreset:{email}", RESET_CODE_TTL_SECONDS, code)
         return code
+
+    @staticmethod
+    def generate_reset_code() -> str:
+        return str(random.randint(100000, 999999))
 
     async def reset_password(self, email: str, otp: str, new_password: str) -> None:
         stored = await self.redis_client.get(f"pwreset:{email}")

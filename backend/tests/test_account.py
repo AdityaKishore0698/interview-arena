@@ -20,11 +20,38 @@ async def _register_and_login(client: AsyncClient) -> tuple[str, str, str]:
     return email, password, token
 
 
-async def test_forgot_password_unknown_email_does_not_error(client: AsyncClient):
-    # Must not leak whether the email is registered.
-    res = await client.post("/api/v1/auth/password/forgot", json={"email": "nobody-here@example.com"})
+async def test_forgot_password_unknown_email_gets_unredeemable_decoy(client: AsyncClient, redis):
+    # Same response shape as a real account, so registration can't be probed,
+    # but the code is never stored and can't be used.
+    email = "nobody-here@example.com"
+    res = await client.post("/api/v1/auth/password/forgot", json={"email": email})
     assert res.status_code == 200
-    assert res.json()["status"] == "sent"
+    data = res.json()
+    assert data["demo_code"].isdigit() and len(data["demo_code"]) == 6
+    assert await redis.get(f"pwreset:{email}") is None
+
+    reset = await client.post(
+        "/api/v1/auth/password/reset",
+        json={"email": email, "otp": data["demo_code"], "new_password": "newpassword123"},
+    )
+    assert reset.status_code == 400
+
+
+async def test_forgot_password_returns_demo_code_and_stores_it_with_expiry(client: AsyncClient, redis):
+    email, _password, _token = await _register_and_login(client)
+
+    res = await client.post("/api/v1/auth/password/forgot", json={"email": email})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["status"] == "demo"
+    assert "DEMO" in data["notice"]
+    assert data["expires_in"] == 900
+    assert set(data) == {"status", "demo_code", "expires_in", "notice"}  # nothing else leaks
+
+    # The returned code is the one stored server-side, with the same expiry.
+    assert await redis.get(f"pwreset:{email}") == data["demo_code"]
+    ttl = await redis.ttl(f"pwreset:{email}")
+    assert 0 < ttl <= 900
 
 
 async def test_forgot_and_reset_password_flow(client: AsyncClient, redis):
@@ -32,14 +59,12 @@ async def test_forgot_and_reset_password_flow(client: AsyncClient, redis):
 
     res = await client.post("/api/v1/auth/password/forgot", json={"email": email})
     assert res.status_code == 200
+    code = res.json()["demo_code"]
 
-    code = await redis.get(f"pwreset:{email}")
-    assert code is not None
-
-    # Wrong code is rejected
+    # Wrong code is rejected (and the real code survives a bad guess)
     bad = await client.post(
         "/api/v1/auth/password/reset",
-        json={"email": email, "otp": "000000", "new_password": "newpassword123"},
+        json={"email": email, "otp": "000000" if code != "000000" else "111111", "new_password": "newpassword123"},
     )
     assert bad.status_code == 400
 
@@ -55,6 +80,59 @@ async def test_forgot_and_reset_password_flow(client: AsyncClient, redis):
     assert old_login.status_code == 401
     new_login = await client.post("/api/v1/auth/login", json={"email": email, "password": "newpassword123"})
     assert new_login.status_code == 200
+
+    # The code is single-use
+    replay = await client.post(
+        "/api/v1/auth/password/reset",
+        json={"email": email, "otp": code, "new_password": "anotherpass123"},
+    )
+    assert replay.status_code == 400
+
+
+async def test_expired_reset_code_is_rejected(client: AsyncClient, redis):
+    email, password, _token = await _register_and_login(client)
+    code = (await client.post("/api/v1/auth/password/forgot", json={"email": email})).json()["demo_code"]
+
+    await redis.delete(f"pwreset:{email}")  # what Redis does when the TTL lapses
+
+    res = await client.post(
+        "/api/v1/auth/password/reset",
+        json={"email": email, "otp": code, "new_password": "newpassword123"},
+    )
+    assert res.status_code == 400
+    # Password unchanged
+    login = await client.post("/api/v1/auth/login", json={"email": email, "password": password})
+    assert login.status_code == 200
+
+
+async def test_reset_enforces_minimum_password_length(client: AsyncClient):
+    email, _password, _token = await _register_and_login(client)
+    code = (await client.post("/api/v1/auth/password/forgot", json={"email": email})).json()["demo_code"]
+    res = await client.post(
+        "/api/v1/auth/password/reset",
+        json={"email": email, "otp": code, "new_password": "short"},
+    )
+    assert res.status_code == 400
+
+
+async def test_password_recovery_needs_no_email_or_smtp(client: AsyncClient):
+    import importlib.util
+    import smtplib
+    from unittest.mock import patch
+
+    from app.core.config import settings
+
+    # The email module and SMTP settings no longer exist at all.
+    assert importlib.util.find_spec("app.core.email") is None
+    assert not [name for name in vars(settings) if name.startswith("SMTP_")]
+
+    email, _password, _token = await _register_and_login(client)
+    with (
+        patch.object(smtplib, "SMTP", side_effect=AssertionError("SMTP must not be used")),
+        patch.object(smtplib, "SMTP_SSL", side_effect=AssertionError("SMTP must not be used")),
+    ):
+        res = await client.post("/api/v1/auth/password/forgot", json={"email": email})
+    assert res.status_code == 200
 
 
 async def test_change_password_requires_current_password(client: AsyncClient):
