@@ -8,7 +8,7 @@ This document is a comprehensive technical specification and handover guide for 
 The application is built as a realistic **production-grade Modular Monolith**, not a prototype. It enforces strict separation of concerns, robust state machines, and concurrency safety.
 
 ### Core Capabilities
-- Authenticated accounts (Google OAuth, Email OTP) alongside ephemeral Guest flows.
+- Authenticated accounts (Google OAuth, Email/Password) alongside ephemeral Guest flows.
 - Concurrent Matchmaking using Redis queues (Quick & Standard modes).
 - Real-time signaling and state synchronization via WebSockets (Redis Pub/Sub backplane).
 - Peer-to-Peer Audio/Video communication via WebRTC.
@@ -41,7 +41,7 @@ The application is built as a realistic **production-grade Modular Monolith**, n
 Supports two flows:
 1. **Registered Users:** 
    - Google OAuth (`/auth/google/login`).
-   - Email OTP (`/auth/otp/send` -> `/auth/otp/verify`).
+   - Email/Password (`/auth/register` creates the account and returns a JWT immediately; `/auth/login`). No email verification or OTP at signup.
    - Issues a JWT securely, persisting users in PostgreSQL.
 2. **Guests:** Ephemeral users intended for immediate quick-play without registration. Guest data resides entirely in Redis and expires via TTL.
 
@@ -83,7 +83,7 @@ Lifecycle state transitions commit to the database (or Redis for guests) *before
 ```
 backend/app/
 ├── core/         # Config, Database setup, Redis connections, Security JWTs
-├── identity/     # Auth routers, User models, OTP services
+├── identity/     # Auth routers, User models, auth services
 ├── matchmaking/  # Queue logic, Redis Lua scripts
 ├── interview/    # Session lifecycle, SQLAlchemy Round models, Rubric submissions
 ├── realtime/     # WebSocket Connection Manager, PubSub Router

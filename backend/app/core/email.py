@@ -36,7 +36,7 @@ def _send_sync(to: str, subject: str, body: str) -> None:
 async def send_email(to: str, subject: str, body: str) -> bool:
     """Send an email. Returns True if actually sent, False if it just logged
     (SMTP not configured) or failed — callers should not treat a False return
-    as fatal since the caller-facing flow (OTP, password reset, ...) must
+    as fatal since the caller-facing flow (password reset) must
     never leak whether delivery succeeded, to avoid account enumeration.
     """
     if not settings.SMTP_HOST:

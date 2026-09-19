@@ -1,11 +1,11 @@
 import os
-import random
 import uuid
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from redis.asyncio import Redis
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from ..core.config import settings
@@ -49,12 +49,23 @@ async def register(
     auth_service: AuthService = Depends(get_auth_service),
     db: AsyncSession = Depends(get_db),
 ):
+    """Create the account immediately and sign the user in.
+
+    No email verification / OTP: the response carries the same JWT that
+    /login would issue, so the client can go straight into the app.
+    """
     try:
         user = await auth_service.register_user(user_data)
         await db.commit()
-        return {"user_id": str(user.id)}
     except EmailAlreadyExistsError as e:
         raise HTTPException(status_code=409, detail=str(e))
+    except IntegrityError:
+        # Two concurrent signups for the same email: the unique constraint won.
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="Email already registered")
+
+    access_token = auth_service.create_access_token({"sub": str(user.id), "type": "REGISTERED"})
+    return {"user_id": str(user.id), "access_token": access_token, "token_type": "bearer"}
 
 
 @router.post("/login", response_model=Token)
@@ -165,7 +176,7 @@ async def delete_account(
     return {"status": "success"}
 
 
-# --- OAUTH & OTP ---
+# --- OAUTH & PASSWORD RESET ---
 
 
 @router.get("/google/login")
@@ -252,40 +263,6 @@ async def google_callback(
     )
 
 
-class OTPRequest(UserCreate):
-    pass  # we can reuse it, or just make a simple schema
-
-
-class OTPSend(UserCreate):
-    pass
-
-
-@router.post("/otp/send")
-async def send_otp(
-    data: dict,  # email, password, name
-    redis: Redis = Depends(get_redis),
-):
-    email = data.get("email")
-    if not email:
-        raise HTTPException(status_code=400, detail="Email required")
-
-    otp = "123456" if is_testing else str(random.randint(100000, 999999))
-
-    if not is_testing:
-        await send_email(
-            email,
-            "Your Interview Arena verification code",
-            f"Your verification code is {otp}. It expires in 5 minutes.\n\n"
-            "If you didn't request this, you can safely ignore this email.",
-        )
-
-    await redis.setex(f"otp:{email}", 300, otp)
-    # Store pending registration data temporarily
-    await redis.setex(f"pending_reg:{email}", 300, json.dumps(data))
-
-    return {"status": "sent"}
-
-
 @router.post("/password/forgot", status_code=status.HTTP_200_OK)
 async def forgot_password(
     body: ForgotPasswordRequest,
@@ -317,59 +294,3 @@ async def reset_password(
         raise HTTPException(status_code=400, detail=str(e))
     await db.commit()
     return {"status": "success"}
-
-
-import json
-
-
-@router.post("/otp/verify")
-async def verify_otp(
-    data: dict,
-    auth_service: AuthService = Depends(get_auth_service),
-    db: AsyncSession = Depends(get_db),
-    redis: Redis = Depends(get_redis),
-):
-    email = data.get("email")
-    otp = data.get("otp")
-
-    if not email or not otp:
-        raise HTTPException(status_code=400, detail="Email and OTP required")
-
-    stored_otp = await redis.get(f"otp:{email}")
-    if not stored_otp or stored_otp != otp:
-        raise HTTPException(status_code=400, detail="Invalid or expired OTP")
-
-    pending = await redis.get(f"pending_reg:{email}")
-    if not pending:
-        raise HTTPException(status_code=400, detail="Registration data expired")
-
-    reg_data = json.loads(pending)
-
-    user = await auth_service.user_repo.get_by_email(email)
-    if user:
-        if user.is_verified:
-            raise HTTPException(
-                status_code=409, detail="User already registered and verified"
-            )
-        else:
-            user.is_verified = True
-            await db.commit()
-    else:
-        # Create user
-        from .schemas import UserCreate
-
-        try:
-            uc = UserCreate(**reg_data)
-            user = await auth_service.register_user(uc)
-            user.is_verified = True
-            await db.commit()
-        except EmailAlreadyExistsError:
-            raise HTTPException(status_code=409, detail="Email exists")
-
-    await redis.delete(f"otp:{email}")
-    await redis.delete(f"pending_reg:{email}")
-
-    access_token = auth_service.create_access_token(
-        {"sub": str(user.id), "type": "REGISTERED"}
-    )
-    return {"access_token": access_token, "token_type": "bearer"}
