@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     GOOGLE_CLIENT_ID: str = ""
     GOOGLE_CLIENT_SECRET: str = ""
     FRONTEND_URL: str = "http://localhost:3000"
+    # This backend's own public URL — used to build the Google OAuth
+    # redirect_uri, which must point at the FastAPI callback route (this
+    # service), not the frontend. Must exactly match an "Authorized redirect
+    # URI" configured on the Google OAuth client.
+    BACKEND_URL: str = "http://localhost:8000"
 
     # Outbound email (OTP / password reset). Leave SMTP_HOST empty to fall
     # back to console logging — no setup required for local dev.

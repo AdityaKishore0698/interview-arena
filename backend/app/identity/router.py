@@ -176,7 +176,7 @@ async def google_login():
     if not settings.GOOGLE_CLIENT_ID:
         raise HTTPException(status_code=500, detail="Google OAuth not configured")
 
-    redirect_uri = f"{settings.FRONTEND_URL}/api/v1/auth/google/callback"
+    redirect_uri = f"{settings.BACKEND_URL}/api/v1/auth/google/callback"
     url = f"https://accounts.google.com/o/oauth2/v2/auth?response_type=code&client_id={settings.GOOGLE_CLIENT_ID}&redirect_uri={redirect_uri}&scope=openid%20email%20profile&access_type=offline"
     return RedirectResponse(url=url)
 
@@ -195,7 +195,7 @@ async def google_callback(
         email = f"test_oauth_{uuid.uuid4().hex[:8]}@example.com"
         name = "Test OAuth User"
     else:
-        redirect_uri = f"{settings.FRONTEND_URL}/api/v1/auth/google/callback"
+        redirect_uri = f"{settings.BACKEND_URL}/api/v1/auth/google/callback"
         token_url = "https://oauth2.googleapis.com/token"
         async with httpx.AsyncClient() as client:
             resp = await client.post(
