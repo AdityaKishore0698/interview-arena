@@ -22,15 +22,11 @@ test.describe('Auth Flow', () => {
     await page.fill('input[placeholder="Email address"]', email);
     await page.fill('input[placeholder="Password"]', password);
 
-    // 4. Submit Registration — sends an OTP and switches to the verification step
+    // 4. Submit Registration — the account is created and signed in immediately
+    //    (no OTP / email verification step)
     await page.click('button:has-text("Create Account")');
 
-    // 5. Complete email verification (OTP is the fixed 123456 under TESTING=true)
-    await expect(page.locator('input[placeholder="6-digit OTP"]')).toBeVisible();
-    await page.fill('input[placeholder="6-digit OTP"]', '123456');
-    await page.click('button:has-text("Verify & Complete")');
-
-    // 6. Verify Dashboard Navigation
+    // 5. Verify Dashboard Navigation
     await expect(page).toHaveURL(/.*\/dashboard/);
     await expect(page.locator(`text=${displayName}`)).toBeVisible();
 

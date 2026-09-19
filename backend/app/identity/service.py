@@ -35,7 +35,9 @@ class AuthService:
         new_user = User(
             email=user_data.email,
             password_hash=hashed_password,
-            is_verified=True # Auto-verify for legacy test flows
+            # Email verification is intentionally not part of signup; the
+            # column is kept (no schema change) and always set for new users.
+            is_verified=True,
         )
         
         # Add profile
@@ -51,10 +53,9 @@ class AuthService:
             raise AccountDisabledError("This account has been deleted")
         if not user.password_hash or not verify_password(user_data.password, user.password_hash):
             return None
-        if not user.is_verified:
-            # For simplicity, if not verified, don't allow login
-            # They should re-register to get OTP
-            raise ValueError("Email not verified")
+        # No `is_verified` gate: email verification no longer exists, and
+        # accounts created before the column was added default to false with
+        # no way to ever verify them — gating on it would lock them out.
         return user
 
     async def create_guest_session(self) -> str:

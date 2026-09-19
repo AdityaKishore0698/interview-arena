@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     # URI" configured on the Google OAuth client.
     BACKEND_URL: str = "http://localhost:8000"
 
-    # Outbound email (OTP / password reset). Leave SMTP_HOST empty to fall
+    # Outbound email (password-reset codes only). Leave SMTP_HOST empty to fall
     # back to console logging — no setup required for local dev.
     SMTP_HOST: str = ""
     SMTP_PORT: int = 587

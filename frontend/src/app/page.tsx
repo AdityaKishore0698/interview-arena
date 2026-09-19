@@ -10,9 +10,8 @@ import { Button } from '@/components/ui/button';
 import { Loader2, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { ThemeToggle } from '@/components/layout/ThemeToggle';
 
-type Mode = 'login' | 'register' | 'verify' | 'forgot' | 'reset';
+type Mode = 'login' | 'register' | 'forgot' | 'reset';
 
-const OTP_TTL_SECONDS = 300;
 const RESET_TTL_SECONDS = 900;
 const RESEND_COOLDOWN_SECONDS = 20;
 
@@ -119,14 +118,12 @@ function AuthContent() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [displayName, setDisplayName] = useState('');
-  const [otp, setOtp] = useState('');
   const [resetOtp, setResetOtp] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loadingAuth, setLoadingAuth] = useState(false);
   const [resendCooldown, setResendCooldown] = useState(0);
 
-  const otpTimeLeft = useCountdown(mode === 'verify', OTP_TTL_SECONDS);
   const resetTimeLeft = useCountdown(mode === 'reset', RESET_TTL_SECONDS);
 
   const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -148,12 +145,12 @@ function AuthContent() {
     setInfoMessage(null);
   };
 
-  const handleResendOtp = async () => {
+  const handleResendResetCode = async () => {
     if (resendCooldown > 0) return;
     setLoadingAuth(true);
     setError(null);
     try {
-      await api.post('/api/v1/auth/otp/send', { email, password, display_name: displayName });
+      await api.post('/api/v1/auth/password/forgot', { email });
       setInfoMessage('A new code is on its way.');
       startResendCooldown();
     } catch (err: unknown) {
@@ -177,16 +174,13 @@ function AuthContent() {
           setLoadingAuth(false);
           return;
         }
-        await api.post('/api/v1/auth/otp/send', { email, password, display_name: displayName });
-        switchMode('verify');
-        startResendCooldown();
-        setLoadingAuth(false);
-        return;
-      }
-
-      if (mode === 'verify') {
-        if (!otp) return;
-        const res = await api.post('/api/v1/auth/otp/verify', { email, otp });
+        // The account is created and a JWT returned in one step — no email
+        // verification — so sign straight in, exactly like the login path.
+        const res = await api.post('/api/v1/auth/register', {
+          email,
+          password,
+          display_name: displayName,
+        });
         const data = res.data;
         const meRes = await api.get('/api/v1/auth/me', {
           headers: { Authorization: `Bearer ${data.access_token}` }
@@ -232,7 +226,13 @@ function AuthContent() {
     } catch (err: unknown) {
       console.error('Auth failed:', err);
       if (err instanceof AxiosError) {
-        setError(err.response?.data?.detail || `Failed to ${mode}`);
+        // FastAPI validation errors (422) come back as a list of {msg} objects.
+        const detail = err.response?.data?.detail;
+        setError(
+          typeof detail === 'string' ? detail
+            : Array.isArray(detail) && detail[0]?.msg ? String(detail[0].msg).replace(/^Value error, /, '')
+            : `Failed to ${mode}`
+        );
       } else {
         setError('An unexpected error occurred');
       }
@@ -294,31 +294,7 @@ function AuthContent() {
           )}
 
           <form onSubmit={handleAuth} className="space-y-4">
-            {mode === 'verify' ? (
-              <>
-                <p className="text-sm text-muted-foreground">We sent a verification code to {email}</p>
-                <input
-                  placeholder="6-digit OTP"
-                  type="text"
-                  value={otp}
-                  onChange={(e) => setOtp(e.target.value)}
-                  className="w-full bg-transparent border-b border-border/60 pb-2 pt-3 px-1 text-sm outline-none transition-colors focus:border-primary tracking-widest"
-                  maxLength={6}
-                  required
-                />
-                <div className="flex items-center justify-between text-xs text-muted-foreground">
-                  <span>{otpTimeLeft > 0 ? `Code expires in ${formatMMSS(otpTimeLeft)}` : 'Code expired'}</span>
-                  <button
-                    type="button"
-                    onClick={handleResendOtp}
-                    disabled={resendCooldown > 0 || loadingAuth}
-                    className="font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
-                  >
-                    {resendCooldown > 0 ? `Resend code (${resendCooldown}s)` : 'Resend code'}
-                  </button>
-                </div>
-              </>
-            ) : mode === 'forgot' ? (
+            {mode === 'forgot' ? (
               <input
                 placeholder="Email address"
                 type="email"
@@ -360,7 +336,7 @@ function AuthContent() {
                   <span>{resetTimeLeft > 0 ? `Code expires in ${formatMMSS(resetTimeLeft)}` : 'Code expired'}</span>
                   <button
                     type="button"
-                    onClick={handleResendOtp}
+                    onClick={handleResendResetCode}
                     disabled={resendCooldown > 0 || loadingAuth}
                     className="font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
                   >
@@ -414,7 +390,6 @@ function AuthContent() {
               {loadingAuth && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {mode === 'login' ? 'Sign In'
                 : mode === 'register' ? 'Create Account'
-                : mode === 'verify' ? 'Verify & Complete'
                 : mode === 'forgot' ? 'Send Reset Code'
                 : 'Reset Password'}
               <ArrowRight className="h-4 w-4" />
