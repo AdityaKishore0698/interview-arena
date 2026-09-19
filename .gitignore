@@ -1,3 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+
+# Test output
+frontend/playwright-report/
+frontend/test-results/
+
+# Local material
 learning-material/
-echo ".DS_Store" >> .gitignore
-echo "**/ .DS_Store" >> .gitignore
