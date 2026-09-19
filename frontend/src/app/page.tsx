@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useRef, Suspense } from 'react';
+import { useEffect, useState, Suspense } from 'react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useAuth } from '@/store/useAuth';
@@ -13,17 +13,19 @@ import { ThemeToggle } from '@/components/layout/ThemeToggle';
 type Mode = 'login' | 'register' | 'forgot' | 'reset';
 
 const RESET_TTL_SECONDS = 900;
-const RESEND_COOLDOWN_SECONDS = 20;
 
-function useCountdown(active: boolean, seconds: number) {
+function useCountdown(active: boolean, seconds: number, restartKey = 0) {
   const [remaining, setRemaining] = useState(seconds);
 
-  // Re-sync during render when the countdown (re)activates — this is React's
-  // sanctioned pattern for "adjust state when a condition changes" and avoids
-  // a synchronous setState in the effect body below.
+  // Re-sync during render when the countdown (re)activates or is restarted
+  // (a new code was issued) — this is React's sanctioned pattern for "adjust
+  // state when a condition changes" and avoids a synchronous setState in the
+  // effect body below.
   const [wasActive, setWasActive] = useState(active);
-  if (active !== wasActive) {
+  const [syncedKey, setSyncedKey] = useState(restartKey);
+  if (active !== wasActive || restartKey !== syncedKey) {
     setWasActive(active);
+    setSyncedKey(restartKey);
     if (active) setRemaining(seconds);
   }
 
@@ -122,22 +124,11 @@ function AuthContent() {
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loadingAuth, setLoadingAuth] = useState(false);
-  const [resendCooldown, setResendCooldown] = useState(0);
+  // DEMO recovery: the backend returns the reset code instead of emailing it.
+  const [demoCode, setDemoCode] = useState<string | null>(null);
+  const [codeVersion, setCodeVersion] = useState(0);
 
-  const resetTimeLeft = useCountdown(mode === 'reset', RESET_TTL_SECONDS);
-
-  const cooldownRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const startResendCooldown = () => {
-    setResendCooldown(RESEND_COOLDOWN_SECONDS);
-    if (cooldownRef.current) clearInterval(cooldownRef.current);
-    cooldownRef.current = setInterval(() => {
-      setResendCooldown((c) => {
-        if (c <= 1 && cooldownRef.current) clearInterval(cooldownRef.current);
-        return Math.max(0, c - 1);
-      });
-    }, 1000);
-  };
-  useEffect(() => () => { if (cooldownRef.current) clearInterval(cooldownRef.current); }, []);
+  const resetTimeLeft = useCountdown(mode === 'reset', RESET_TTL_SECONDS, codeVersion);
 
   const switchMode = (next: Mode) => {
     setMode(next);
@@ -145,16 +136,22 @@ function AuthContent() {
     setInfoMessage(null);
   };
 
-  const handleResendResetCode = async () => {
-    if (resendCooldown > 0) return;
+  // Ask the backend for a DEMO reset code and show it on the reset screen.
+  const requestResetCode = async () => {
+    const res = await api.post('/api/v1/auth/password/forgot', { email });
+    const code: string = res.data.demo_code;
+    setDemoCode(code);
+    setResetOtp(code);
+    setCodeVersion((v) => v + 1);
+  };
+
+  const handleNewCode = async () => {
     setLoadingAuth(true);
     setError(null);
     try {
-      await api.post('/api/v1/auth/password/forgot', { email });
-      setInfoMessage('A new code is on its way.');
-      startResendCooldown();
+      await requestResetCode();
     } catch (err: unknown) {
-      setError(err instanceof AxiosError ? err.response?.data?.detail || 'Failed to resend code' : 'An unexpected error occurred');
+      setError(err instanceof AxiosError ? err.response?.data?.detail || 'Failed to get a new code' : 'An unexpected error occurred');
     } finally {
       setLoadingAuth(false);
     }
@@ -191,9 +188,8 @@ function AuthContent() {
       }
 
       if (mode === 'forgot') {
-        await api.post('/api/v1/auth/password/forgot', { email });
+        await requestResetCode();
         switchMode('reset');
-        startResendCooldown();
         setLoadingAuth(false);
         return;
       }
@@ -208,6 +204,10 @@ function AuthContent() {
         await api.post('/api/v1/auth/password/reset', { email, otp: resetOtp, new_password: newPassword });
         switchMode('login');
         setPassword('');
+        setDemoCode(null);
+        setResetOtp('');
+        setNewPassword('');
+        setConfirmPassword('');
         setInfoMessage('Password updated. Sign in with your new password.');
         setLoadingAuth(false);
         return;
@@ -248,8 +248,8 @@ function AuthContent() {
     mode === 'reset' ? 'Choose a new password' :
     'Access the Arena';
   const subheading =
-    mode === 'forgot' ? "Enter your account email and we'll send you a reset code." :
-    mode === 'reset' ? `Enter the code we sent to ${email} and your new password.` :
+    mode === 'forgot' ? "Enter your account email to get a demo reset code. No email is sent." :
+    mode === 'reset' ? 'Use the demo reset code below and choose a new password.' :
     'Sign in to your account or continue as a guest to start practicing immediately.';
 
   return (
@@ -305,6 +305,15 @@ function AuthContent() {
               />
             ) : mode === 'reset' ? (
               <>
+                {demoCode && (
+                  <div className="rounded-r-md border-l-2 border-primary bg-primary/10 p-4 text-sm" aria-live="polite">
+                    <p className="text-xs font-semibold uppercase tracking-widest text-primary">Demo recovery code</p>
+                    <p className="mt-1 font-mono text-2xl font-semibold tracking-[0.3em]" data-testid="demo-reset-code">{demoCode}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      This is a demo: no email is sent, so the code is shown here instead.
+                    </p>
+                  </div>
+                )}
                 <input
                   placeholder="6-digit reset code"
                   type="text"
@@ -334,14 +343,16 @@ function AuthContent() {
                 />
                 <div className="flex items-center justify-between text-xs text-muted-foreground">
                   <span>{resetTimeLeft > 0 ? `Code expires in ${formatMMSS(resetTimeLeft)}` : 'Code expired'}</span>
-                  <button
-                    type="button"
-                    onClick={handleResendResetCode}
-                    disabled={resendCooldown > 0 || loadingAuth}
-                    className="font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
-                  >
-                    {resendCooldown > 0 ? `Resend code (${resendCooldown}s)` : 'Resend code'}
-                  </button>
+                  {resetTimeLeft === 0 && (
+                    <button
+                      type="button"
+                      onClick={handleNewCode}
+                      disabled={loadingAuth}
+                      className="font-medium text-primary hover:underline disabled:cursor-not-allowed disabled:text-muted-foreground disabled:no-underline"
+                    >
+                      Get a new code
+                    </button>
+                  )}
                 </div>
               </>
             ) : (
@@ -390,7 +401,7 @@ function AuthContent() {
               {loadingAuth && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               {mode === 'login' ? 'Sign In'
                 : mode === 'register' ? 'Create Account'
-                : mode === 'forgot' ? 'Send Reset Code'
+                : mode === 'forgot' ? 'Get Demo Reset Code'
                 : 'Reset Password'}
               <ArrowRight className="h-4 w-4" />
             </Button>
