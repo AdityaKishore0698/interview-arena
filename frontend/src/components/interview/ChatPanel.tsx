@@ -19,10 +19,14 @@ export function ChatPanel({
   currentUser: User;
 }) {
   const [input, setInput] = useState('');
-  const endRef = useRef<HTMLDivElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: 'smooth' });
+    // Scroll only the message list. scrollIntoView() also scrolls every
+    // overflow-hidden ancestor, which pushed the session header (round label
+    // and timer) out of view whenever a message arrived.
+    const list = listRef.current;
+    list?.scrollTo({ top: list.scrollHeight, behavior: 'smooth' });
   }, [messages]);
 
   const handleSend = () => {
@@ -40,13 +44,13 @@ export function ChatPanel({
   };
 
   return (
-    <div className="flex h-full flex-col bg-surface/40">
+    <div className="flex min-h-0 flex-1 flex-col bg-surface/40">
       <div className="flex items-center justify-between border-b border-border/60 bg-surface/60 px-4 py-3">
         <h3 className="text-xs font-semibold uppercase tracking-widest text-muted-foreground">Session Chat</h3>
         <span className="text-[10px] uppercase tracking-wider text-muted-foreground/60">Relayed via server</span>
       </div>
 
-      <div className="flex-1 space-y-4 overflow-y-auto p-4">
+      <div ref={listRef} className="flex-1 space-y-4 overflow-y-auto p-4">
         {messages.length === 0 ? (
           <div className="flex h-full flex-col items-center justify-center space-y-3 text-center opacity-40">
             <span className="text-2xl">💬</span>
@@ -67,7 +71,6 @@ export function ChatPanel({
             );
           })
         )}
-        <div ref={endRef} />
       </div>
 
       <div className="border-t border-border/60 bg-surface/60 p-4">
