@@ -407,7 +407,7 @@ export default function InterviewPage() {
 
   return (
     <AppLayout>
-      <div className="flex-1 flex flex-col h-[calc(100vh-64px)] overflow-hidden bg-background/40">
+      <div className="flex-1 lg:flex-none flex flex-col h-[calc(100vh-64px)] overflow-hidden bg-background/40">
         <SessionHeader
           roundLabel={roundLabel}
           roleLabel={role}
@@ -420,7 +420,7 @@ export default function InterviewPage() {
         />
 
         <div className="relative z-10 flex flex-1 flex-col overflow-hidden lg:flex-row">
-          <div className="flex min-w-0 flex-1 flex-col bg-surface/30 backdrop-blur-sm">
+          <div className="flex min-w-0 flex-1 flex-col overflow-y-auto bg-surface/30 backdrop-blur-sm">
             {isFeedback ? (
               <FeedbackForm
                 sessionId={session.id}
@@ -440,7 +440,7 @@ export default function InterviewPage() {
           </div>
 
           {!isPreparation && !isFeedback && (
-            <div className="flex h-full shrink-0 flex-col border-t border-border/60 bg-background/50 animate-in fade-in slide-in-from-right-4 duration-500 lg:w-[380px] lg:border-l lg:border-t-0 xl:w-[420px]">
+            <div className="flex shrink-0 flex-col border-t border-border/60 bg-background/50 animate-in fade-in slide-in-from-right-4 duration-500 lg:w-[380px] lg:border-l lg:border-t-0 xl:w-[420px]">
               <VideoPanel
                 localStream={webrtc.localStream}
                 remoteStream={webrtc.remoteStream}
