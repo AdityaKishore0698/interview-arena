@@ -79,7 +79,51 @@ class SessionService:
             "title": chosen.title,
             "prompt": chosen.prompt,
             "difficulty": chosen.difficulty,
+            "custom": False,
         }
+
+    @staticmethod
+    def _resolve_problem(
+        problem_id: uuid.UUID | None,
+        custom_text: str | None,
+        problems_by_slot: dict[int, list[InterviewProblem]],
+        session_id: str,
+        round_number: int,
+        round_started: bool,
+    ) -> dict[str, Any] | None:
+        """An interviewer's explicit pick (from the bank or free-form) always
+        wins, and is visible as soon as it's made — even before the round
+        starts, since that's the whole point of picking ahead of time.
+        Otherwise, once the round has actually started, fall back to the
+        existing deterministic auto-pick: picking is a suggestion, not
+        mandatory, so an interviewer who never bothers sees no change.
+
+        Takes plain values rather than an ORM object so both the registered
+        (Postgres row) and guest (Redis hash) round representations can share
+        this one resolution rule."""
+        if problem_id is not None:
+            for candidates in problems_by_slot.values():
+                for p in candidates:
+                    if p.id == problem_id:
+                        return {
+                            "id": str(p.id),
+                            "title": p.title,
+                            "prompt": p.prompt,
+                            "difficulty": p.difficulty,
+                            "custom": False,
+                        }
+            return None  # the chosen problem was deleted; FK is ON DELETE SET NULL so this heals itself
+        if custom_text:
+            return {
+                "id": None,
+                "title": "Interviewer's question",
+                "prompt": custom_text,
+                "difficulty": None,
+                "custom": True,
+            }
+        if round_started:
+            return SessionService._pick_problem(problems_by_slot, session_id, round_number)
+        return None
 
     async def get_session(self, session_id: str) -> dict[str, Any] | None:
         # 1. Try PostgreSQL (Registered users)
@@ -108,7 +152,9 @@ class SessionService:
                         "round_number": r.round_number,
                         "status": r.status,
                         "roles": {participant_map[str(rp.participant_id)]: rp.role for rp in r.round_participants},
-                        "problem": self._pick_problem(problems_by_slot, str(session.id), r.round_number) if round_started else None,
+                        "problem": self._resolve_problem(
+                            r.problem_id, r.custom_problem_text, problems_by_slot, str(session.id), r.round_number, round_started
+                        ),
                         "feedbacks": [
                             {
                                 "evaluated_role": fb.evaluated_role,
@@ -188,7 +234,11 @@ class SessionService:
                     "round_number": n,
                     "status": status,
                     "roles": round_roles[n],
-                    "problem": self._pick_problem(problems_by_slot, session_id, n) if round_started else None,
+                    "problem": self._resolve_problem(
+                        uuid.UUID(guest_session[f"round_{n}_problem_id"]) if guest_session.get(f"round_{n}_problem_id") else None,
+                        guest_session.get(f"round_{n}_custom_text") or None,
+                        problems_by_slot, session_id, n, round_started,
+                    ),
                     "feedbacks": feedbacks,
                 })
 
@@ -373,4 +423,168 @@ class SessionService:
                 "event": "FEEDBACK_SUBMITTED",
                 "payload": {"userId": user_id, "roundId": round_id}
             })
+        )
+
+    async def _get_round_for_interviewer(self, round_id: str, user_id: str) -> InterviewRound:
+        """Loads a round and confirms the caller is its interviewer. Shared by
+        both the suggestions read and the selection write."""
+        try:
+            round_uuid = uuid.UUID(round_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=404, detail="Round not found")
+
+        from .models import RoundParticipant
+
+        result = await self.db.execute(
+            select(InterviewRound)
+            .options(
+                selectinload(InterviewRound.round_participants).selectinload(RoundParticipant.participant),
+                selectinload(InterviewRound.session),
+            )
+            .where(InterviewRound.id == round_uuid)
+        )
+        round_obj = result.scalars().first()
+        if not round_obj:
+            raise HTTPException(status_code=404, detail="Round not found")
+
+        my_role = next(
+            (rp.role for rp in round_obj.round_participants if str(rp.participant.user_id) == user_id),
+            None,
+        )
+        if my_role != "INTERVIEWER":
+            raise HTTPException(status_code=403, detail="Only this round's interviewer can do this")
+        return round_obj
+
+    @staticmethod
+    def _parse_guest_round_id(round_id: str) -> tuple[str, int] | None:
+        """Guest round ids look like 'round_1_<session_id>' / 'round_2_<session_id>'
+        (see the guest branch of get_session) — a real round's UUID can never
+        take that form, so this is an unambiguous way to tell the two apart.
+        Returns (session_id, round_number), or None if this isn't a guest id."""
+        for n in (1, 2):
+            prefix = f"round_{n}_"
+            if round_id.startswith(prefix):
+                return round_id[len(prefix):], n
+        return None
+
+    @staticmethod
+    def _require_guest_interviewer(guest_session: dict, user_id: str, round_number: int) -> None:
+        # Mirrors get_session's round_roles convention: user_a interviews in
+        # round 1, user_b in round 2 (roles reverse the same way as for
+        # registered sessions — this isn't stored separately, just derived).
+        interviewer = guest_session.get("user_a") if round_number == 1 else guest_session.get("user_b")
+        if user_id != interviewer:
+            raise HTTPException(status_code=403, detail="Only this round's interviewer can do this")
+
+    async def get_problem_suggestions(self, round_id: str, user_id: str) -> list[dict[str, Any]]:
+        """Problems from the round's room+slot, for its interviewer to
+        optionally pick from — registered and guest sessions alike."""
+        guest = self._parse_guest_round_id(round_id)
+        if guest:
+            session_id, round_number = guest
+            guest_session = await self.redis.hgetall(f"guest_session:{session_id}")
+            if not guest_session:
+                raise HTTPException(status_code=404, detail="Round not found")
+            self._require_guest_interviewer(guest_session, user_id, round_number)
+            problems_by_slot = await self._load_problems_by_slot(guest_session.get("room_id"))
+            candidates = problems_by_slot.get(round_number) or []
+            return [
+                {"id": str(p.id), "title": p.title, "prompt": p.prompt, "difficulty": p.difficulty}
+                for p in candidates
+            ]
+
+        round_obj = await self._get_round_for_interviewer(round_id, user_id)
+        problems_by_slot = await self._load_problems_by_slot(str(round_obj.session.room_id))
+        candidates = problems_by_slot.get(round_obj.round_number) or []
+        return [
+            {"id": str(p.id), "title": p.title, "prompt": p.prompt, "difficulty": p.difficulty}
+            for p in candidates
+        ]
+
+    async def select_problem(
+        self, round_id: str, user_id: str, problem_id: str | None, custom_text: str | None
+    ) -> None:
+        """Only the round's interviewer may pick, and only before that round
+        is over. Picking is a suggestion aid, not a commitment made ahead of
+        time, so it stays changeable right up until then."""
+        guest = self._parse_guest_round_id(round_id)
+        if guest:
+            await self._select_problem_guest(round_id, guest, user_id, problem_id, custom_text)
+            return
+
+        round_obj = await self._get_round_for_interviewer(round_id, user_id)
+        if round_obj.status == "COMPLETED":
+            raise HTTPException(status_code=409, detail="This round is already over")
+
+        if bool(problem_id) == bool(custom_text):
+            raise HTTPException(status_code=400, detail="Provide exactly one of problem_id or custom_text")
+
+        if problem_id:
+            try:
+                problem_uuid = uuid.UUID(problem_id)
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=404, detail="Problem not found for this room")
+            problem = await self.db.get(InterviewProblem, problem_uuid)
+            if not problem or problem.room_id != round_obj.session.room_id:
+                raise HTTPException(status_code=404, detail="Problem not found for this room")
+            round_obj.problem_id = problem.id
+            round_obj.custom_problem_text = None
+        else:
+            text = (custom_text or "").strip()
+            if not text or len(text) > 2000:
+                raise HTTPException(status_code=400, detail="custom_text must be 1-2000 characters")
+            round_obj.custom_problem_text = text
+            round_obj.problem_id = None
+
+        session_result = await self.db.execute(
+            select(InterviewSession).where(InterviewSession.id == round_obj.session_id)
+        )
+        session = session_result.scalars().first()
+        if session:
+            session.version += 1
+        await self.db.commit()
+
+        await self.redis.publish(
+            f"session:{round_obj.session_id}:events",
+            json.dumps({"type": "EVENT", "event": "SESSION_UPDATED", "payload": {"roundId": round_id}})
+        )
+
+    async def _select_problem_guest(
+        self, round_id: str, guest: tuple[str, int], user_id: str, problem_id: str | None, custom_text: str | None
+    ) -> None:
+        session_id, round_number = guest
+        session_key = f"guest_session:{session_id}"
+        guest_session = await self.redis.hgetall(session_key)
+        if not guest_session:
+            raise HTTPException(status_code=404, detail="Round not found")
+        self._require_guest_interviewer(guest_session, user_id, round_number)
+        if guest_session.get(f"round_{round_number}_status") == "COMPLETED":
+            raise HTTPException(status_code=409, detail="This round is already over")
+
+        if bool(problem_id) == bool(custom_text):
+            raise HTTPException(status_code=400, detail="Provide exactly one of problem_id or custom_text")
+
+        updates: dict[str, str] = {}
+        if problem_id:
+            try:
+                problem_uuid = uuid.UUID(problem_id)
+            except (ValueError, TypeError):
+                raise HTTPException(status_code=404, detail="Problem not found for this room")
+            problem = await self.db.get(InterviewProblem, problem_uuid)
+            if not problem or str(problem.room_id) != guest_session.get("room_id"):
+                raise HTTPException(status_code=404, detail="Problem not found for this room")
+            updates[f"round_{round_number}_problem_id"] = str(problem.id)
+            updates[f"round_{round_number}_custom_text"] = ""  # Redis hash fields can't be unset in place; empty means "not set", same convention _resolve_problem expects
+        else:
+            text = (custom_text or "").strip()
+            if not text or len(text) > 2000:
+                raise HTTPException(status_code=400, detail="custom_text must be 1-2000 characters")
+            updates[f"round_{round_number}_custom_text"] = text
+            updates[f"round_{round_number}_problem_id"] = ""
+
+        updates["version"] = str(int(guest_session.get("version", 1)) + 1)
+        await self.redis.hset(session_key, mapping=updates)
+        await self.redis.publish(
+            f"session:{session_id}:events",
+            json.dumps({"type": "EVENT", "event": "SESSION_UPDATED", "payload": {"roundId": round_id}})
         )

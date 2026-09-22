@@ -98,6 +98,14 @@ class InterviewRound(Base):
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # An interviewer's explicit choice for this round, made from the
+    # suggested bank (problem_id) or written free-hand (custom_problem_text).
+    # At most one is set at a time. Neither being set means "not chosen yet";
+    # the round falls back to the existing deterministic auto-pick once it
+    # actually starts (picking a question is a suggestion, not mandatory).
+    problem_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("interview_problems.id", ondelete="SET NULL"), nullable=True)
+    custom_problem_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     session: Mapped[InterviewSession] = relationship("InterviewSession", back_populates="rounds")
     round_participants: Mapped[list[RoundParticipant]] = relationship("RoundParticipant", back_populates="round", cascade="all, delete-orphan")
     feedbacks: Mapped[list[Feedback]] = relationship("Feedback", back_populates="round", cascade="all, delete-orphan")
