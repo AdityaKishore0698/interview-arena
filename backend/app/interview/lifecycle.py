@@ -9,6 +9,7 @@ from sqlalchemy.orm import selectinload
 
 from ..core.database import AsyncSessionLocal
 from ..core.redis import get_redis
+from ..identity.streaks import record_checkin
 from .models import InterviewRound, InterviewSession
 
 logger = logging.getLogger(__name__)
@@ -129,6 +130,10 @@ async def advance_state(session_id: str, is_guest: bool) -> bool:
                     session.version += 1
                     if r2: r2.status = "COMPLETED"
                     changed = True
+                    # Award interview-streak credit to both real (non-guest)
+                    # participants in the same transaction as completion.
+                    for p in session.participants:
+                        await record_checkin(db, p.user_id, "interview")
                     schedule_broadcast("SESSION_COMPLETED", {})
             
             if changed:
@@ -255,6 +260,19 @@ async def advance_state(session_id: str, is_guest: bool) -> bool:
         if changed:
             updates["version"] = str(version + 1)
             await redis.hset(session_key, mapping=updates)
+            if status in ("COMPLETED", "ABANDONED"):
+                # Mirrors the registered-session cleanup above and the
+                # explicit-leave path in SessionService.leave_session — without
+                # this, a guest whose session ends naturally (rather than by
+                # clicking Leave) keeps a stale active_match lock, and their
+                # very next queue join is silently redirected back to this
+                # same, already-finished session instead of starting a new one.
+                user_a = guest_session.get("user_a")
+                user_b = guest_session.get("user_b")
+                for uid in (user_a, user_b):
+                    if uid:
+                        await redis.delete(f"active_match:{uid}")
+                        await redis.delete(f"current_queue:{uid}")
             for event_name, payload in events_to_broadcast:
                 if "endsAt" in payload:
                     await redis.set(f"session:{session_id}:ends_at", payload["endsAt"], ex=86400)
