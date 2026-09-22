@@ -145,6 +145,28 @@
   h1, h2, h3, h4 {
     text-wrap: balance;
   }
+  /* A hand cursor on anything actually clickable — native buttons and links
+     get this from most browsers already, but it's not guaranteed, and the
+     custom role="button" cards used around this app (room/mode pickers,
+     question list rows, etc.) get none of it by default. Excludes disabled
+     controls, which should read as inert rather than clickable. */
+  button:not(:disabled),
+  [role="button"]:not([aria-disabled="true"]),
+  a[href],
+  input[type="submit"]:not(:disabled),
+  input[type="button"]:not(:disabled),
+  input[type="checkbox"]:not(:disabled),
+  input[type="radio"]:not(:disabled),
+  select:not(:disabled),
+  label[for],
+  summary {
+    cursor: pointer;
+  }
+  button:disabled,
+  [role="button"][aria-disabled="true"],
+  input:disabled {
+    cursor: not-allowed;
+  }
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;

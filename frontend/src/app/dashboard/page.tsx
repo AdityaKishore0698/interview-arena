@@ -7,7 +7,7 @@ import AppLayout from '@/components/layout/AppLayout';
 import { Button } from '@/components/ui/button';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { api } from '@/lib/api';
-import { Loader2, ArrowRight } from 'lucide-react';
+import { Loader2, ArrowRight, ArrowUpRight } from 'lucide-react';
 import { QueueUX } from '@/components/matchmaking/QueueUX';
 
 interface Room {
@@ -39,8 +39,13 @@ const SCORE_LABELS: Record<string, string> = {
   problemSolving: 'Problem Solving',
 };
 
+// The dashboard is a quick launchpad, not a record — cap it to a handful of
+// recent sessions and send anyone who wants the rest to the searchable,
+// filterable full history on the profile page.
+const DASHBOARD_HISTORY_LIMIT = 6;
+
 export default function DashboardPage() {
-  const { user } = useAuth();
+  const { user, hasHydrated } = useAuth();
   const router = useRouter();
 
   const { data: historyData, isLoading: historyLoading } = useQuery({
@@ -58,10 +63,12 @@ export default function DashboardPage() {
   const [matchId, setMatchId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!user) {
+    // Wait for zustand/persist to read localStorage before trusting a null
+    // user — see the comment on `hasHydrated` in store/useAuth.ts.
+    if (hasHydrated && !user) {
       router.replace('/');
     }
-  }, [user, router]);
+  }, [user, hasHydrated, router]);
 
   // Fetch Rooms
   const { data: roomsData, isLoading: roomsLoading } = useQuery({
@@ -300,9 +307,21 @@ export default function DashboardPage() {
 
             {/* History Section */}
             <section className="space-y-4 mt-16 pt-8 border-t border-border/40">
-              <h2 className="text-sm font-semibold tracking-widest text-muted-foreground uppercase flex items-center">
-                <span className="w-6 h-px bg-border mr-4"></span> Recent Interviews
-              </h2>
+              <div className="flex items-center justify-between gap-4">
+                <h2 className="text-sm font-semibold tracking-widest text-muted-foreground uppercase flex items-center">
+                  <span className="w-6 h-px bg-border mr-4"></span> Recent Interviews
+                </h2>
+                {user.type === 'REGISTERED' && historyData && historyData.length > DASHBOARD_HISTORY_LIMIT && (
+                  <button
+                    type="button"
+                    onClick={() => router.push('/profile#history')}
+                    className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                  >
+                    View all {historyData.length}
+                    <ArrowUpRight className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
               {user.type !== 'REGISTERED' ? (
                 <div className="flex flex-col items-center gap-3 rounded-2xl border border-dashed border-border/50 bg-surface/30 p-8 text-center">
                   <p className="text-foreground">Guest sessions don&apos;t save history.</p>
@@ -320,7 +339,7 @@ export default function DashboardPage() {
                   </div>
               ) : historyData && historyData.length > 0 ? (
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  {historyData.map((session) => {
+                  {historyData.slice(0, DASHBOARD_HISTORY_LIMIT).map((session) => {
                     const received = session.rounds
                       .map((r) => ({
                         round: r.round_number,

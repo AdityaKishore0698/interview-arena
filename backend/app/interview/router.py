@@ -55,6 +55,14 @@ class FeedbackSubmit(BaseModel):
     scores: dict
     comments: str | None = None
 
+
+class ProblemSelection(BaseModel):
+    """Exactly one of these two must be set: pick from the suggested bank,
+    or write a question of your own. Picking is optional — a round with
+    neither set just keeps today's auto-pick-once-started behavior."""
+    problem_id: str | None = None
+    custom_text: str | None = None
+
 @router.post("/{session_id}/leave")
 async def leave_session(
     session_id: str,
@@ -73,6 +81,27 @@ async def submit_feedback(
     current_user: dict = Depends(get_current_user)
 ):
     await service.submit_feedback(session_id, round_id, current_user["id"], feedback.scores, feedback.comments)
+    return {"status": "success"}
+
+@router.get("/{session_id}/rounds/{round_id}/problems/suggestions")
+async def get_problem_suggestions(
+    session_id: str,
+    round_id: str,
+    service: SessionService = Depends(get_session_service),
+    current_user: dict = Depends(get_current_user)
+):
+    problems = await service.get_problem_suggestions(round_id, current_user["id"])
+    return {"problems": problems}
+
+@router.post("/{session_id}/rounds/{round_id}/problem")
+async def select_problem(
+    session_id: str,
+    round_id: str,
+    body: ProblemSelection,
+    service: SessionService = Depends(get_session_service),
+    current_user: dict = Depends(get_current_user)
+):
+    await service.select_problem(round_id, current_user["id"], body.problem_id, body.custom_text)
     return {"status": "success"}
 
 @router.get("/user/history")
@@ -106,7 +135,7 @@ async def get_user_history(
         .where(InterviewParticipant.user_id == user_uuid)
         .where(InterviewSession.status == "COMPLETED")
         .order_by(desc(InterviewSession.created_at))
-        .limit(20)
+        .limit(200)
     )
     sessions = result.scalars().unique().all()
 
