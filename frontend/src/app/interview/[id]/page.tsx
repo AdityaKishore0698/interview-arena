@@ -17,10 +17,11 @@ import { VideoPanel } from '@/components/interview/VideoPanel';
 import { useWebRTC, type RtcSignal } from '@/hooks/useWebRTC';
 
 interface SessionProblem {
-  id: string;
+  id: string | null;
   title: string;
   prompt: string;
-  difficulty: string;
+  difficulty: string | null;
+  custom?: boolean;
 }
 
 interface SessionFeedback {
@@ -435,6 +436,12 @@ export default function InterviewPage() {
                 role={role}
                 isPreparation={isPreparation}
                 problem={currentRound?.problem ?? null}
+                // The backend resolves picking for both registered rounds
+                // (a real row) and guest rounds (their Redis session), so
+                // this is passed unconditionally now.
+                sessionId={sessionId}
+                roundId={currentRound?.id}
+                onProblemSelected={refetch}
               />
             )}
           </div>

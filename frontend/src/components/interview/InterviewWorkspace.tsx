@@ -1,10 +1,13 @@
+import { useState } from 'react';
 import { BookOpen, Code2 } from 'lucide-react';
+import { QuestionPicker } from './QuestionPicker';
 
 interface Problem {
-  id: string;
+  id: string | null;
   title: string;
   prompt: string;
-  difficulty: string;
+  difficulty: string | null;
+  custom?: boolean;
 }
 
 interface InterviewWorkspaceProps {
@@ -13,6 +16,11 @@ interface InterviewWorkspaceProps {
   role: string;
   isPreparation: boolean;
   problem?: Problem | null;
+  /** Needed only to offer the picker during preparation; omit to hide it
+   * entirely (e.g. for account types the picker doesn't support). */
+  sessionId?: string;
+  roundId?: string;
+  onProblemSelected?: () => void;
 }
 
 function DifficultyBadge({ value }: { value: string }) {
@@ -35,9 +43,30 @@ export function InterviewWorkspace({
   role,
   isPreparation,
   problem,
+  sessionId,
+  roundId,
+  onProblemSelected,
 }: InterviewWorkspaceProps) {
   const isSystemDesign = roomName.toLowerCase().includes('system design');
   const isInterviewer = role === 'INTERVIEWER';
+  const [pickerOpen, setPickerOpen] = useState(false);
+  // The interviewer may pick or change the question for whichever round is
+  // current — during preparation or once it's live — in both round 1 and
+  // round 2 (this component is reused for both; `role`/`problem` already
+  // reflect "the current round" generically). Only unavailable when the
+  // parent withholds sessionId/roundId (guest sessions — see the caller).
+  const canOfferPicker = isInterviewer && !!sessionId && !!roundId && !!onProblemSelected;
+
+  // This component isn't remounted between rounds — only its props change —
+  // so a picker left open at the end of round 1 would otherwise still show
+  // as "open" once round 2's props arrive. Reset during render (React's
+  // sanctioned pattern for "adjust state when a prop changes") rather than
+  // in an effect.
+  const [syncedRoundId, setSyncedRoundId] = useState(roundId);
+  if (roundId !== syncedRoundId) {
+    setSyncedRoundId(roundId);
+    setPickerOpen(false);
+  }
 
   return (
     <div className="flex h-full flex-1 flex-col overflow-hidden bg-transparent animate-in fade-in duration-700">
@@ -84,6 +113,57 @@ export function InterviewWorkspace({
                 ))}
               </ul>
             </div>
+
+            {isInterviewer ? (
+              problem && !pickerOpen ? (
+                <div className="space-y-3 border-t border-border/60 pt-6">
+                  <div className="flex items-center justify-between">
+                    <h4 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">
+                      Your question for this round
+                    </h4>
+                    {canOfferPicker && (
+                      <button
+                        type="button"
+                        onClick={() => setPickerOpen(true)}
+                        className="text-xs font-medium text-primary hover:underline"
+                      >
+                        Change
+                      </button>
+                    )}
+                  </div>
+                  <div className="rounded-xl border border-border/60 bg-surface/40 p-4">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <h5 className="text-base font-semibold text-foreground">{problem.title}</h5>
+                      {problem.difficulty && <DifficultyBadge value={problem.difficulty} />}
+                    </div>
+                    <p className="whitespace-pre-wrap text-sm text-foreground/80">{problem.prompt}</p>
+                  </div>
+                </div>
+              ) : canOfferPicker ? (
+                <QuestionPicker
+                  sessionId={sessionId!}
+                  roundId={roundId!}
+                  onSelected={() => { setPickerOpen(false); onProblemSelected!(); }}
+                />
+              ) : null
+            ) : problem ? (
+              <div className="space-y-3 border-t border-border/60 pt-6">
+                <h4 className="text-sm font-semibold uppercase tracking-widest text-muted-foreground">
+                  Your interviewer has chosen this question
+                </h4>
+                <div className="rounded-xl border border-border/60 bg-surface/40 p-4">
+                  <div className="mb-2 flex items-center justify-between gap-2">
+                    <h5 className="text-base font-semibold text-foreground">{problem.title}</h5>
+                    {problem.difficulty && <DifficultyBadge value={problem.difficulty} />}
+                  </div>
+                  <p className="whitespace-pre-wrap text-sm text-foreground/80">{problem.prompt}</p>
+                </div>
+              </div>
+            ) : (
+              <p className="border-t border-border/60 pt-6 text-sm text-muted-foreground">
+                Your interviewer hasn&apos;t picked a question yet — one will be chosen automatically once the round begins.
+              </p>
+            )}
           </div>
         ) : (
           <div className="mx-auto flex h-full w-full max-w-[1200px] flex-col space-y-6">
@@ -102,10 +182,27 @@ export function InterviewWorkspace({
               <div className="flex flex-[5] flex-col overflow-hidden rounded-2xl border border-border/60 bg-surface/40 shadow-elev-sm">
                 <div className="flex items-center justify-between border-b border-border/60 bg-surface/60 px-4 py-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
                   <span>{isInterviewer ? 'Problem to ask' : 'Problem'}</span>
-                  {problem && <DifficultyBadge value={problem.difficulty} />}
+                  <div className="flex items-center gap-3">
+                    {!pickerOpen && problem?.difficulty && <DifficultyBadge value={problem.difficulty} />}
+                    {canOfferPicker && (
+                      <button
+                        type="button"
+                        onClick={() => setPickerOpen((v) => !v)}
+                        className="normal-case tracking-normal text-primary hover:underline"
+                      >
+                        {pickerOpen ? 'Cancel' : 'Change question'}
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="flex-1 overflow-y-auto p-6 text-sm leading-relaxed text-foreground/90">
-                  {problem ? (
+                  {canOfferPicker && pickerOpen ? (
+                    <QuestionPicker
+                      sessionId={sessionId!}
+                      roundId={roundId!}
+                      onSelected={() => { setPickerOpen(false); onProblemSelected!(); }}
+                    />
+                  ) : problem ? (
                     <div className="space-y-4">
                       {isInterviewer && (
                         <p className="text-xs font-medium text-primary">
