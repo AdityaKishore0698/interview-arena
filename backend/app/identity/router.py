@@ -17,6 +17,7 @@ from ..core.exceptions import (
     InvalidCredentialsError,
 )
 from ..core.redis import get_redis
+from .models import UserStreak
 from .repository import UserRepository
 from .schemas import (
     ChangePasswordRequest,
@@ -29,6 +30,7 @@ from .schemas import (
     UserLogin,
 )
 from .service import RESET_CODE_TTL_SECONDS, AuthService
+from .streaks import record_checkin
 
 is_testing = os.environ.get("TESTING", "").lower() == "true"
 
@@ -55,6 +57,7 @@ async def register(
     """
     try:
         user = await auth_service.register_user(user_data)
+        access_token = auth_service.issue_session_token(user)
         await db.commit()
     except EmailAlreadyExistsError as e:
         raise HTTPException(status_code=409, detail=str(e))
@@ -63,14 +66,14 @@ async def register(
         await db.rollback()
         raise HTTPException(status_code=409, detail="Email already registered")
 
-    access_token = auth_service.create_access_token({"sub": str(user.id), "type": "REGISTERED"})
     return {"user_id": str(user.id), "access_token": access_token, "token_type": "bearer"}
 
 
 @router.post("/login", response_model=Token)
 async def login(
-    user_data: UserLogin, 
-    auth_service: AuthService = Depends(get_auth_service)
+    user_data: UserLogin,
+    auth_service: AuthService = Depends(get_auth_service),
+    db: AsyncSession = Depends(get_db),
 ):
     try:
         user = await auth_service.authenticate_user(user_data)
@@ -81,7 +84,10 @@ async def login(
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
-    access_token = auth_service.create_access_token({"sub": str(user.id), "type": "REGISTERED"})
+    # Signing in here invalidates any token issued by a previous login —
+    # only one active session per account (see AuthService.issue_session_token).
+    access_token = auth_service.issue_session_token(user)
+    await db.commit()
     return {"access_token": access_token, "token_type": "bearer"}
 
 
@@ -101,12 +107,65 @@ async def get_me(current_user: dict = Depends(get_current_user)):
 
 @router.post("/logout", status_code=status.HTTP_200_OK)
 async def logout(
-    current_user: dict = Depends(get_current_user), redis: Redis = Depends(get_redis)
+    current_user: dict = Depends(get_current_user),
+    redis: Redis = Depends(get_redis),
+    auth_service: AuthService = Depends(get_auth_service),
+    db: AsyncSession = Depends(get_db),
 ):
     user_id = current_user["id"]
     await redis.delete(f"active_match:{user_id}")
     await redis.delete(f"current_queue:{user_id}")
+    if current_user["type"] == "REGISTERED":
+        # Bumping session_version here (not just clearing client-side state)
+        # means a logged-out token can never be replayed, even if it hasn't
+        # expired yet — the same mechanism that enforces one active session.
+        user = await auth_service.user_repo.get_by_id(uuid.UUID(user_id))
+        if user:
+            user.session_version += 1
+            await db.commit()
     return {"status": "success"}
+
+
+def _streak_response(row: UserStreak | None) -> dict:
+    if row is None:
+        return {
+            "login_streak": 0,
+            "longest_login_streak": 0,
+            "interview_streak": 0,
+            "longest_interview_streak": 0,
+        }
+    return {
+        "login_streak": row.login_streak,
+        "longest_login_streak": row.longest_login_streak,
+        "interview_streak": row.interview_streak,
+        "longest_interview_streak": row.longest_interview_streak,
+    }
+
+
+@router.post("/streaks/checkin", status_code=status.HTTP_200_OK)
+async def checkin_streak(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Marks today as active for the caller's daily login streak. Idempotent
+    per UTC calendar day — the frontend calls this once per day, but calling
+    it again the same day is a safe no-op rather than double-counting."""
+    if current_user["type"] != "REGISTERED":
+        raise HTTPException(status_code=403, detail="Guests have no persistent streak")
+    row = await record_checkin(db, uuid.UUID(current_user["id"]), "login")
+    await db.commit()
+    return _streak_response(row)
+
+
+@router.get("/streaks/me")
+async def get_streak(
+    current_user: dict = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    if current_user["type"] != "REGISTERED":
+        return _streak_response(None)
+    row = await db.get(UserStreak, uuid.UUID(current_user["id"]))
+    return _streak_response(row)
 
 
 @router.patch("/me")
@@ -126,8 +185,21 @@ async def update_profile(
     if not user or not user.profile:
         raise HTTPException(status_code=404, detail="User not found")
     user.profile.display_name = display_name
+
+    if body.avatar_url is not None:
+        if body.avatar_url == "":
+            user.profile.avatar_url = None
+        else:
+            # Capped well under Postgres's TEXT limit — this is a small,
+            # client-resized thumbnail, not general file storage.
+            if len(body.avatar_url) > 300_000:
+                raise HTTPException(status_code=400, detail="Photo is too large")
+            if not (body.avatar_url.startswith("data:image/") or body.avatar_url.startswith("https://")):
+                raise HTTPException(status_code=400, detail="Photo must be an uploaded image or an https:// URL")
+            user.profile.avatar_url = body.avatar_url
+
     await db.commit()
-    return {"status": "success", "display_name": display_name}
+    return {"status": "success", "display_name": display_name, "avatar_url": user.profile.avatar_url}
 
 
 @router.post("/password/change", status_code=status.HTTP_200_OK)
@@ -254,9 +326,9 @@ async def google_callback(
             user.is_verified = True
             await db.commit()
 
-    access_token = auth_service.create_access_token(
-        {"sub": str(user.id), "type": "REGISTERED"}
-    )
+    # Same one-active-session rule as password login.
+    access_token = auth_service.issue_session_token(user)
+    await db.commit()
     return RedirectResponse(
         url=f"{settings.FRONTEND_URL}/?token={access_token}"
     )

@@ -29,6 +29,16 @@ class AuthService:
         to_encode.update({"exp": expire})
         return jwt.encode(to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
+    def issue_session_token(self, user: User) -> str:
+        """The single entry point for signing a registered user in: bumps
+        session_version so any token issued before this one stops working,
+        enforcing one active session per account. Callers still need to
+        commit — this only mutates the in-memory `user` object."""
+        user.session_version += 1
+        return self.create_access_token(
+            {"sub": str(user.id), "type": "REGISTERED", "sv": user.session_version}
+        )
+
     async def register_user(self, user_data: UserCreate) -> User:
         existing = await self.user_repo.get_by_email(user_data.email)
         if existing:

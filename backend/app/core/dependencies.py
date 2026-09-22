@@ -48,11 +48,22 @@ async def get_current_user(
         user = await user_repo.get_by_id(parsed_id)
         if not user or user.status != "ACTIVE":
             raise credentials_exception
+        # A token with no "sv" claim predates this check and is treated as
+        # version 0 — matching a never-logged-in-since user's column default,
+        # so it keeps working until their next login. See
+        # AuthService.issue_session_token for where "sv" is set and bumped.
+        if payload.get("sv", 0) != user.session_version:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Logged out: this account was signed in from another device",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
         return {
-            "id": str(user.id), 
-            "type": "REGISTERED", 
-            "display_name": user.profile.display_name if user.profile else "User", 
-            "email": user.email
+            "id": str(user.id),
+            "type": "REGISTERED",
+            "display_name": user.profile.display_name if user.profile else "User",
+            "email": user.email,
+            "avatar_url": user.profile.avatar_url if user.profile else None,
         }
 
     raise credentials_exception
