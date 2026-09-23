@@ -43,6 +43,26 @@ class InterviewProblem(Base):
     difficulty: Mapped[str] = mapped_column(String(20), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
+    # Only set for problems that support "run against test cases" (DSA today
+    # — see the code execution flow). Describes the exact stdin/stdout
+    # convention its test_cases use, since the execution engine runs a full
+    # program against raw stdin/stdout rather than calling a function stub.
+    io_note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    test_cases: Mapped[list[ProblemTestCase]] = relationship(
+        "ProblemTestCase", back_populates="problem", cascade="all, delete-orphan"
+    )
+
+
+class ProblemTestCase(Base):
+    __tablename__ = "problem_test_cases"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    problem_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("interview_problems.id", ondelete="CASCADE"), nullable=False)
+    input: Mapped[str] = mapped_column(Text, nullable=False)
+    expected_output: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    problem: Mapped[InterviewProblem] = relationship("InterviewProblem", back_populates="test_cases")
 
 
 class InterviewSession(Base):
@@ -105,6 +125,13 @@ class InterviewRound(Base):
     # actually starts (picking a question is a suggestion, not mandatory).
     problem_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("interview_problems.id", ondelete="SET NULL"), nullable=True)
     custom_problem_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # The interviewee's optional code editor is a single "latest submission"
+    # snapshot per round, not a run history — set when they explicitly
+    # submit (not on every "Run"), and kept afterward as part of history.
+    submitted_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    submitted_language: Mapped[str | None] = mapped_column(String(30), nullable=True)
+    code_submitted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     session: Mapped[InterviewSession] = relationship("InterviewSession", back_populates="rounds")
     round_participants: Mapped[list[RoundParticipant]] = relationship("RoundParticipant", back_populates="round", cascade="all, delete-orphan")

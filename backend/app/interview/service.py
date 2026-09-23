@@ -3,17 +3,20 @@ import json
 import uuid
 from typing import Any
 
+import httpx
 from fastapi import HTTPException
 from redis.asyncio import Redis
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 from sqlalchemy.orm import selectinload
 
+from . import code_execution
 from .models import (
     InterviewProblem,
     InterviewRoom,
     InterviewRound,
     InterviewSession,
+    ProblemTestCase,
 )
 
 # Round/session statuses at or past which a round's problem is authoritative
@@ -155,6 +158,9 @@ class SessionService:
                         "problem": self._resolve_problem(
                             r.problem_id, r.custom_problem_text, problems_by_slot, str(session.id), r.round_number, round_started
                         ),
+                        "submitted_code": r.submitted_code,
+                        "submitted_language": r.submitted_language,
+                        "code_submitted_at": r.code_submitted_at.isoformat() if r.code_submitted_at else None,
                         "feedbacks": [
                             {
                                 "evaluated_role": fb.evaluated_role,
@@ -239,6 +245,9 @@ class SessionService:
                         guest_session.get(f"round_{n}_custom_text") or None,
                         problems_by_slot, session_id, n, round_started,
                     ),
+                    "submitted_code": guest_session.get(f"round_{n}_code") or None,
+                    "submitted_language": guest_session.get(f"round_{n}_code_language") or None,
+                    "code_submitted_at": guest_session.get(f"round_{n}_code_submitted_at") or None,
                     "feedbacks": feedbacks,
                 })
 
@@ -587,4 +596,151 @@ class SessionService:
         await self.redis.publish(
             f"session:{session_id}:events",
             json.dumps({"type": "EVENT", "event": "SESSION_UPDATED", "payload": {"roundId": round_id}})
+        )
+
+    async def _get_round_for_interviewee(self, round_id: str, user_id: str) -> InterviewRound:
+        """Mirrors _get_round_for_interviewer — the code editor is the
+        interviewee's tool, so only they may run or submit code for a round."""
+        try:
+            round_uuid = uuid.UUID(round_id)
+        except (ValueError, TypeError):
+            raise HTTPException(status_code=404, detail="Round not found")
+
+        from .models import RoundParticipant
+
+        result = await self.db.execute(
+            select(InterviewRound)
+            .options(
+                selectinload(InterviewRound.round_participants).selectinload(RoundParticipant.participant),
+                selectinload(InterviewRound.session),
+            )
+            .where(InterviewRound.id == round_uuid)
+        )
+        round_obj = result.scalars().first()
+        if not round_obj:
+            raise HTTPException(status_code=404, detail="Round not found")
+
+        my_role = next(
+            (rp.role for rp in round_obj.round_participants if str(rp.participant.user_id) == user_id),
+            None,
+        )
+        if my_role != "INTERVIEWEE":
+            raise HTTPException(status_code=403, detail="Only this round's interviewee can do this")
+        return round_obj
+
+    @staticmethod
+    def _require_guest_interviewee(guest_session: dict, user_id: str, round_number: int) -> None:
+        # Inverse of _require_guest_interviewer's convention: user_a is the
+        # interviewer in round 1 (so user_b is the interviewee), and roles
+        # reverse for round 2.
+        interviewee = guest_session.get("user_b") if round_number == 1 else guest_session.get("user_a")
+        if user_id != interviewee:
+            raise HTTPException(status_code=403, detail="Only this round's interviewee can do this")
+
+    async def _resolve_test_cases(self, problem_id: uuid.UUID | None) -> list[ProblemTestCase]:
+        if problem_id is None:
+            return []
+        result = await self.db.execute(
+            select(ProblemTestCase).where(ProblemTestCase.problem_id == problem_id)
+        )
+        return list(result.scalars().all())
+
+    async def run_code_against_tests(
+        self, round_id: str, user_id: str, language: str, code: str
+    ) -> dict[str, Any]:
+        """Runs the interviewee's code against the round's problem's sample
+        test cases (DSA problems only — anything else simply has none seeded,
+        so this naturally scopes itself without a hardcoded room check)."""
+        if language not in code_execution.SUPPORTED_LANGUAGES:
+            raise HTTPException(status_code=400, detail="Unsupported language")
+        if len(code) > 50_000:
+            raise HTTPException(status_code=400, detail="Code is too long")
+
+        guest = self._parse_guest_round_id(round_id)
+        if guest:
+            session_id, round_number = guest
+            guest_session = await self.redis.hgetall(f"guest_session:{session_id}")
+            if not guest_session:
+                raise HTTPException(status_code=404, detail="Round not found")
+            self._require_guest_interviewee(guest_session, user_id, round_number)
+            raw_problem_id = guest_session.get(f"round_{round_number}_problem_id")
+            problem_id = uuid.UUID(raw_problem_id) if raw_problem_id else None
+        else:
+            round_obj = await self._get_round_for_interviewee(round_id, user_id)
+            problem_id = round_obj.problem_id
+
+        test_cases = await self._resolve_test_cases(problem_id)
+        if not test_cases:
+            raise HTTPException(status_code=400, detail="This problem has no test cases to run against")
+
+        results = []
+        for tc in test_cases:
+            try:
+                outcome = await code_execution.run_code(language, code, tc.input)
+            except RuntimeError as e:
+                # Missing API key — a setup problem, not the candidate's code.
+                raise HTTPException(status_code=503, detail=str(e))
+            except httpx.HTTPError:
+                raise HTTPException(status_code=502, detail="The code execution service is unavailable right now — try again in a moment.")
+            actual = outcome.stdout.strip()
+            expected = tc.expected_output.strip()
+            results.append({
+                "input": tc.input,
+                "expected_output": tc.expected_output,
+                "actual_output": outcome.stdout,
+                "stderr": outcome.stderr,
+                "passed": actual == expected and not outcome.timed_out,
+                "timed_out": outcome.timed_out,
+            })
+        return {"results": results, "passed_count": sum(1 for r in results if r["passed"]), "total": len(results)}
+
+    async def submit_code(self, round_id: str, user_id: str, language: str, code: str) -> None:
+        """Persists the interviewee's code as this round's single latest
+        submission and notifies the interviewer over the session's WS
+        channel — kept afterward as part of interview history, like feedback."""
+        if language not in code_execution.SUPPORTED_LANGUAGES:
+            raise HTTPException(status_code=400, detail="Unsupported language")
+        if len(code) > 50_000:
+            raise HTTPException(status_code=400, detail="Code is too long")
+
+        import datetime
+
+        guest = self._parse_guest_round_id(round_id)
+        if guest:
+            session_id, round_number = guest
+            session_key = f"guest_session:{session_id}"
+            guest_session = await self.redis.hgetall(session_key)
+            if not guest_session:
+                raise HTTPException(status_code=404, detail="Round not found")
+            self._require_guest_interviewee(guest_session, user_id, round_number)
+
+            updates = {
+                f"round_{round_number}_code": code,
+                f"round_{round_number}_code_language": language,
+                f"round_{round_number}_code_submitted_at": datetime.datetime.now(datetime.UTC).isoformat(),
+                "version": str(int(guest_session.get("version", 1)) + 1),
+            }
+            await self.redis.hset(session_key, mapping=updates)
+            await self.redis.publish(
+                f"session:{session_id}:events",
+                json.dumps({"type": "EVENT", "event": "CODE_SUBMITTED", "payload": {"roundId": round_id}})
+            )
+            return
+
+        round_obj = await self._get_round_for_interviewee(round_id, user_id)
+        round_obj.submitted_code = code
+        round_obj.submitted_language = language
+        round_obj.code_submitted_at = datetime.datetime.now(datetime.UTC)
+
+        session_result = await self.db.execute(
+            select(InterviewSession).where(InterviewSession.id == round_obj.session_id)
+        )
+        session = session_result.scalars().first()
+        if session:
+            session.version += 1
+        await self.db.commit()
+
+        await self.redis.publish(
+            f"session:{round_obj.session_id}:events",
+            json.dumps({"type": "EVENT", "event": "CODE_SUBMITTED", "payload": {"roundId": round_id}})
         )

@@ -59,6 +59,12 @@ class Settings(BaseSettings):
     # URI" configured on the Google OAuth client.
     BACKEND_URL: str = "http://localhost:8000"
 
+    # Third-party sandboxed code execution: Judge0 CE via RapidAPI. Sign up at
+    # rapidapi.com, subscribe to the free Judge0 CE tier, and set
+    # CODE_EXECUTION_API_KEY in .env — see app/interview/code_execution.py.
+    CODE_EXECUTION_API_URL: str = "https://judge0-ce.p.rapidapi.com"
+    CODE_EXECUTION_API_KEY: str = ""
+
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     @field_validator("DATABASE_URL", mode="after")

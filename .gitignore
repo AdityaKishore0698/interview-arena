@@ -6,6 +6,10 @@ __pycache__/
 .pytest_cache/
 .ruff_cache/
 
+# Downloaded at runtime by app/interview/code_formatting.py (Java formatting) —
+# too large to commit (~200MB), re-fetched automatically if missing.
+backend/.jdk-cache/
+
 # Environment files
 .env
 .env.*

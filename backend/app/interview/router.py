@@ -104,6 +104,67 @@ async def select_problem(
     await service.select_problem(round_id, current_user["id"], body.problem_id, body.custom_text)
     return {"status": "success"}
 
+
+class CodeRunRequest(BaseModel):
+    language: str
+    code: str
+
+
+class CodeSubmitRequest(BaseModel):
+    language: str
+    code: str
+
+
+class CodeFormatRequest(BaseModel):
+    language: str
+    code: str
+
+
+@router.get("/code/languages")
+async def get_code_languages():
+    from .code_execution import SUPPORTED_LANGUAGES
+    return {"languages": sorted(SUPPORTED_LANGUAGES.keys())}
+
+
+@router.post("/code/format")
+async def format_code_endpoint(
+    body: CodeFormatRequest,
+    current_user: dict = Depends(get_current_user)
+):
+    from .code_formatting import FormatError, format_code
+    try:
+        formatted = await format_code(body.language, body.code)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="No server-side formatter for this language")
+    except FormatError as e:
+        raise HTTPException(status_code=422, detail=f"Could not format — check for syntax errors: {e}")
+    except Exception:
+        raise HTTPException(status_code=503, detail="The formatting service is temporarily unavailable")
+    return {"formatted_code": formatted}
+
+
+@router.post("/{session_id}/rounds/{round_id}/code/run")
+async def run_code(
+    session_id: str,
+    round_id: str,
+    body: CodeRunRequest,
+    service: SessionService = Depends(get_session_service),
+    current_user: dict = Depends(get_current_user)
+):
+    return await service.run_code_against_tests(round_id, current_user["id"], body.language, body.code)
+
+
+@router.post("/{session_id}/rounds/{round_id}/code/submit")
+async def submit_code(
+    session_id: str,
+    round_id: str,
+    body: CodeSubmitRequest,
+    service: SessionService = Depends(get_session_service),
+    current_user: dict = Depends(get_current_user)
+):
+    await service.submit_code(round_id, current_user["id"], body.language, body.code)
+    return {"status": "success"}
+
 @router.get("/user/history")
 async def get_user_history(
     db: AsyncSession = Depends(get_db),
@@ -163,7 +224,12 @@ async def get_user_history(
                     "giver_user_id": part_user.get(str(fb.giver_participant_id)),
                     "receiver_user_id": part_user.get(str(fb.receiver_participant_id)),
                 })
-            rounds_data.append({"round_number": r.round_number, "feedbacks": feedbacks})
+            rounds_data.append({
+                "round_number": r.round_number,
+                "feedbacks": feedbacks,
+                "submitted_code": r.submitted_code,
+                "submitted_language": r.submitted_language,
+            })
 
         history_data.append({
             "id": str(s.id),
