@@ -1,6 +1,8 @@
 import { useState } from 'react';
-import { BookOpen, Code2 } from 'lucide-react';
+import { BookOpen, ChevronLeft, ChevronRight, Code2, NotebookPen } from 'lucide-react';
 import { QuestionPicker } from './QuestionPicker';
+import { CodeEditor } from './CodeEditor';
+import { CodeViewer } from './CodeViewer';
 
 interface Problem {
   id: string | null;
@@ -21,6 +23,12 @@ interface InterviewWorkspaceProps {
   sessionId?: string;
   roundId?: string;
   onProblemSelected?: () => void;
+  /** The interviewee's optional code editor is off by default — see the
+   * Notes/Code tab toggle below. Omit alongside sessionId/roundId to hide it
+   * entirely (e.g. for account types the picker doesn't support either). */
+  submittedCode?: string | null;
+  submittedLanguage?: string | null;
+  onCodeSubmitted?: () => void;
 }
 
 function DifficultyBadge({ value }: { value: string }) {
@@ -46,10 +54,20 @@ export function InterviewWorkspace({
   sessionId,
   roundId,
   onProblemSelected,
+  submittedCode,
+  submittedLanguage,
+  onCodeSubmitted,
 }: InterviewWorkspaceProps) {
   const isSystemDesign = roomName.toLowerCase().includes('system design');
   const isInterviewer = role === 'INTERVIEWER';
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState<'notes' | 'code'>('notes');
+  const canUseCodeEditor = !!sessionId && !!roundId;
+  // Lets either side shrink the problem panel to a slim strip so the
+  // notes/code panel can take up most of the width — handy once the
+  // candidate is deep into writing code and just needs a quick glance back
+  // at the prompt rather than half the screen.
+  const [problemCollapsed, setProblemCollapsed] = useState(false);
   // The interviewer may pick or change the question for whichever round is
   // current — during preparation or once it's live — in both round 1 and
   // round 2 (this component is reused for both; `role`/`problem` already
@@ -66,6 +84,7 @@ export function InterviewWorkspace({
   if (roundId !== syncedRoundId) {
     setSyncedRoundId(roundId);
     setPickerOpen(false);
+    setActiveTab('notes');
   }
 
   return (
@@ -179,64 +198,131 @@ export function InterviewWorkspace({
 
             <div className="relative flex flex-1 flex-col gap-6 md:flex-row">
               {/* Problem panel — authoritative content from the backend */}
-              <div className="flex flex-[5] flex-col overflow-hidden rounded-2xl border border-border/60 bg-surface/40 shadow-elev-sm">
-                <div className="flex items-center justify-between border-b border-border/60 bg-surface/60 px-4 py-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                  <span>{isInterviewer ? 'Problem to ask' : 'Problem'}</span>
-                  <div className="flex items-center gap-3">
-                    {!pickerOpen && problem?.difficulty && <DifficultyBadge value={problem.difficulty} />}
-                    {canOfferPicker && (
+              {problemCollapsed ? (
+                <button
+                  type="button"
+                  onClick={() => setProblemCollapsed(false)}
+                  title="Show the problem"
+                  className="flex shrink-0 flex-col items-center gap-3 rounded-2xl border border-border/60 bg-surface/40 py-4 text-muted-foreground shadow-elev-sm transition-colors hover:bg-surface/70 hover:text-foreground md:w-12"
+                >
+                  <ChevronRight className="h-4 w-4" />
+                  <span className="text-xs font-semibold uppercase tracking-widest [writing-mode:vertical-rl]">
+                    {isInterviewer ? 'Problem to ask' : 'Problem'}
+                  </span>
+                </button>
+              ) : (
+                <div className="flex flex-[5] flex-col overflow-hidden rounded-2xl border border-border/60 bg-surface/40 shadow-elev-sm">
+                  <div className="flex items-center justify-between border-b border-border/60 bg-surface/60 px-4 py-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                    <div className="flex items-center gap-2">
                       <button
                         type="button"
-                        onClick={() => setPickerOpen((v) => !v)}
-                        className="normal-case tracking-normal text-primary hover:underline"
+                        onClick={() => setProblemCollapsed(true)}
+                        title="Minimize — give the code editor more room"
+                        className="-ml-1 rounded-md p-1 normal-case text-muted-foreground transition-colors hover:bg-surface hover:text-foreground"
                       >
-                        {pickerOpen ? 'Cancel' : 'Change question'}
+                        <ChevronLeft className="h-3.5 w-3.5" />
                       </button>
+                      <span>{isInterviewer ? 'Problem to ask' : 'Problem'}</span>
+                    </div>
+                    <div className="flex items-center gap-3">
+                      {!pickerOpen && problem?.difficulty && <DifficultyBadge value={problem.difficulty} />}
+                      {canOfferPicker && (
+                        <button
+                          type="button"
+                          onClick={() => setPickerOpen((v) => !v)}
+                          className="normal-case tracking-normal text-primary hover:underline"
+                        >
+                          {pickerOpen ? 'Cancel' : 'Change question'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex-1 overflow-y-auto p-6 text-sm leading-relaxed text-foreground/90">
+                    {canOfferPicker && pickerOpen ? (
+                      <QuestionPicker
+                        sessionId={sessionId!}
+                        roundId={roundId!}
+                        onSelected={() => { setPickerOpen(false); onProblemSelected!(); }}
+                      />
+                    ) : problem ? (
+                      <div className="space-y-4">
+                        {isInterviewer && (
+                          <p className="text-xs font-medium text-primary">
+                            Present this problem to the candidate and guide the discussion.
+                          </p>
+                        )}
+                        <h4 className="text-lg font-semibold tracking-tight text-foreground">
+                          {problem.title}
+                        </h4>
+                        <p className="whitespace-pre-wrap">{problem.prompt}</p>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-2 text-muted-foreground">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary/60" />
+                        Loading the problem for this round…
+                      </div>
                     )}
                   </div>
                 </div>
-                <div className="flex-1 overflow-y-auto p-6 text-sm leading-relaxed text-foreground/90">
-                  {canOfferPicker && pickerOpen ? (
-                    <QuestionPicker
+              )}
+
+              {/* Candidate notes, and — optionally — a real code editor */}
+              <div className={`flex flex-col overflow-hidden rounded-2xl border border-border/60 bg-surface/40 shadow-elev-md ${problemCollapsed ? 'flex-1' : 'flex-[5]'}`}>
+                <div className="flex items-center justify-between border-b border-border/60 bg-surface/60 px-2 py-1.5 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab('notes')}
+                      className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition-colors ${activeTab === 'notes' ? 'bg-primary/10 text-primary' : 'hover:text-foreground'}`}
+                    >
+                      <NotebookPen className="h-3.5 w-3.5" />
+                      {isSystemDesign ? 'Design Notes' : 'Notes'}
+                    </button>
+                    {canUseCodeEditor && (
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab('code')}
+                        className={`flex items-center gap-1.5 rounded-lg px-3 py-1.5 transition-colors ${activeTab === 'code' ? 'bg-primary/10 text-primary' : 'hover:text-foreground'}`}
+                      >
+                        <Code2 className="h-3.5 w-3.5" />
+                        Code
+                      </button>
+                    )}
+                  </div>
+                  <span className="normal-case tracking-normal text-muted-foreground/70">
+                    {activeTab === 'notes' ? 'Local only' : isInterviewer ? "Interviewee's editor" : 'Visible once submitted'}
+                  </span>
+                </div>
+
+                {activeTab === 'code' && canUseCodeEditor ? (
+                  isInterviewer ? (
+                    submittedCode ? (
+                      <CodeViewer code={submittedCode} language={submittedLanguage ?? null} />
+                    ) : (
+                      <div className="flex flex-1 items-center justify-center p-6 text-center text-sm text-muted-foreground">
+                        Nothing submitted yet — ask your candidate to code the solution, and it&apos;ll appear here once they submit.
+                      </div>
+                    )
+                  ) : (
+                    <CodeEditor
                       sessionId={sessionId!}
                       roundId={roundId!}
-                      onSelected={() => { setPickerOpen(false); onProblemSelected!(); }}
+                      initialCode={submittedCode}
+                      initialLanguage={submittedLanguage}
+                      onSubmitted={onCodeSubmitted}
                     />
-                  ) : problem ? (
-                    <div className="space-y-4">
-                      {isInterviewer && (
-                        <p className="text-xs font-medium text-primary">
-                          Present this problem to the candidate and guide the discussion.
-                        </p>
-                      )}
-                      <h4 className="text-lg font-semibold tracking-tight text-foreground">
-                        {problem.title}
-                      </h4>
-                      <p className="whitespace-pre-wrap">{problem.prompt}</p>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-2 text-muted-foreground">
-                      <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-primary/60" />
-                      Loading the problem for this round…
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* Candidate scratchpad — local only */}
-              <div className="flex flex-[5] flex-col overflow-hidden rounded-2xl border border-border/60 bg-surface/40 shadow-elev-md">
-                <div className="flex justify-between border-b border-border/60 bg-surface/60 px-4 py-3 text-xs font-semibold uppercase tracking-widest text-muted-foreground">
-                  <span>{isSystemDesign ? 'Design Notes' : 'Code / Scratchpad'} (Local)</span>
-                </div>
-                <textarea
-                  className="w-full flex-1 resize-none bg-transparent p-6 font-mono text-sm leading-relaxed outline-none focus:ring-1 focus:ring-inset focus:ring-primary/20"
-                  placeholder={
-                    isSystemDesign
-                      ? 'Sketch your design — components, API contracts, trade-offs…'
-                      : 'Work through the problem here…'
-                  }
-                  spellCheck={false}
-                />
+                  )
+                ) : (
+                  <textarea
+                    className="w-full flex-1 resize-none bg-transparent p-6 font-mono text-sm leading-relaxed outline-none focus:ring-1 focus:ring-inset focus:ring-primary/20"
+                    placeholder={
+                      isSystemDesign
+                        ? 'Sketch your design — components, API contracts, trade-offs…'
+                        : 'Work through the problem here…'
+                    }
+                    spellCheck={false}
+                  />
+                )}
               </div>
             </div>
           </div>
