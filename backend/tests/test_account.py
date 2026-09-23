@@ -165,6 +165,66 @@ async def test_update_profile_display_name(client: AsyncClient):
     assert me.json()["display_name"] == "New Name"
 
 
+async def test_update_avatar_data_uri(client: AsyncClient):
+    _email, _password, token = await _register_and_login(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    data_uri = "data:image/jpeg;base64," + ("A" * 100)
+
+    res = await client.patch("/api/v1/auth/me", json={"display_name": "N", "avatar_url": data_uri}, headers=headers)
+    assert res.status_code == 200
+    assert res.json()["avatar_url"] == data_uri
+
+    me = await client.get("/api/v1/auth/me", headers=headers)
+    assert me.json()["avatar_url"] == data_uri
+
+
+async def test_update_avatar_https_url(client: AsyncClient):
+    _email, _password, token = await _register_and_login(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    res = await client.patch(
+        "/api/v1/auth/me", json={"display_name": "N", "avatar_url": "https://example.com/me.png"}, headers=headers
+    )
+    assert res.status_code == 200
+    assert res.json()["avatar_url"] == "https://example.com/me.png"
+
+
+async def test_avatar_rejects_non_image_scheme(client: AsyncClient):
+    _email, _password, token = await _register_and_login(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    res = await client.patch(
+        "/api/v1/auth/me", json={"display_name": "N", "avatar_url": "javascript:alert(1)"}, headers=headers
+    )
+    assert res.status_code == 400
+
+
+async def test_avatar_rejects_oversized_payload(client: AsyncClient):
+    _email, _password, token = await _register_and_login(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    huge = "data:image/jpeg;base64," + ("A" * 400_000)
+    res = await client.patch("/api/v1/auth/me", json={"display_name": "N", "avatar_url": huge}, headers=headers)
+    assert res.status_code == 400
+
+
+async def test_avatar_can_be_removed(client: AsyncClient):
+    _email, _password, token = await _register_and_login(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    await client.patch("/api/v1/auth/me", json={"display_name": "N", "avatar_url": "https://example.com/a.png"}, headers=headers)
+
+    res = await client.patch("/api/v1/auth/me", json={"display_name": "N", "avatar_url": ""}, headers=headers)
+    assert res.status_code == 200
+    assert res.json()["avatar_url"] is None
+
+
+async def test_avatar_untouched_when_field_omitted(client: AsyncClient):
+    _email, _password, token = await _register_and_login(client)
+    headers = {"Authorization": f"Bearer {token}"}
+    await client.patch("/api/v1/auth/me", json={"display_name": "N", "avatar_url": "https://example.com/a.png"}, headers=headers)
+
+    res = await client.patch("/api/v1/auth/me", json={"display_name": "N2"}, headers=headers)
+    assert res.status_code == 200
+    assert res.json()["avatar_url"] == "https://example.com/a.png"
+
+
 async def test_guest_cannot_update_profile_or_password(client: AsyncClient):
     guest = await client.post("/api/v1/auth/guest")
     headers = {"Authorization": f"Bearer {guest.json()['access_token']}"}

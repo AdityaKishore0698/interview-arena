@@ -57,3 +57,7 @@ class ChangePasswordRequest(BaseModel):
 
 class UpdateProfileRequest(BaseModel):
     display_name: str
+    # None (the default, if the field is left out entirely): leave the avatar
+    # as-is. Empty string: remove it. Any other value: replace it (validated
+    # server-side — see the /me handler).
+    avatar_url: str | None = None

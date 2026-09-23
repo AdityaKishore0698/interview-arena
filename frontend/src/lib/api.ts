@@ -33,7 +33,12 @@ api.interceptors.response.use(
       const isAuthAttempt = UNAUTHENTICATED_ROUTES.some((path) => url.includes(path));
       const hadSession = !!useAuth.getState().token;
       if (!isAuthAttempt && hadSession) {
-        useAuth.getState().logoutWithNotice('Your session has expired. Please sign in again.');
+        const detail: string | undefined = error.response?.data?.detail;
+        useAuth.getState().logoutWithNotice(
+          detail && detail.includes('another device')
+            ? 'You were signed out because this account was signed in from another device.'
+            : 'Your session has expired. Please sign in again.'
+        );
       } else {
         useAuth.getState().logout();
       }

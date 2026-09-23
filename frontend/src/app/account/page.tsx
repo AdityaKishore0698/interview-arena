@@ -1,15 +1,29 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@/store/useAuth';
 import AppLayout from '@/components/layout/AppLayout';
+import { Avatar } from '@/components/layout/Avatar';
+import { AvatarCropDialog } from '@/components/account/AvatarCropDialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogFooter } from '@/components/ui/dialog';
 import { api } from '@/lib/api';
 import { AxiosError } from 'axios';
-import { CheckCircle2, Loader2, ShieldAlert } from 'lucide-react';
+import { CheckCircle2, Loader2, ShieldAlert, Upload, X } from 'lucide-react';
+
+/** Just reads the raw file into a data URL for the crop dialog to display —
+ * cropping (and the resize down to a small square) happens interactively in
+ * AvatarCropDialog once the user has positioned it themselves. */
+function readFileAsDataUri(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Could not read the file.'));
+    reader.onload = () => resolve(reader.result as string);
+    reader.readAsDataURL(file);
+  });
+}
 
 function FieldError({ message }: { message: string | null }) {
   if (!message) return null;
@@ -28,9 +42,34 @@ function FieldSuccess({ message }: { message: string | null }) {
 function ProfileSection() {
   const { user, updateUser } = useAuth();
   const [displayName, setDisplayName] = useState(user?.display_name || '');
+  // undefined = unchanged (omit from the request); null = remove; string = new (cropped) photo.
+  const [avatarDraft, setAvatarDraft] = useState<string | null | undefined>(undefined);
+  // The just-selected file, shown in the crop dialog before it becomes avatarDraft.
+  const [rawImageSrc, setRawImageSrc] = useState<string | null>(null);
+  const [avatarBusy, setAvatarBusy] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const previewSrc = avatarDraft === undefined ? user?.avatar_url : avatarDraft;
+
+  const handleFileChosen = async (file: File | undefined) => {
+    if (!file) return;
+    setError(null);
+    if (!file.type.startsWith('image/')) {
+      setError('Please choose an image file.');
+      return;
+    }
+    setAvatarBusy(true);
+    try {
+      setRawImageSrc(await readFileAsDataUri(file));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not read that file.');
+    } finally {
+      setAvatarBusy(false);
+    }
+  };
 
   const handleSave = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -38,9 +77,12 @@ function ProfileSection() {
     setError(null);
     setSuccess(null);
     try {
-      await api.patch('/api/v1/auth/me', { display_name: displayName });
-      updateUser({ display_name: displayName });
-      setSuccess('Display name updated.');
+      const body: { display_name: string; avatar_url?: string } = { display_name: displayName };
+      if (avatarDraft !== undefined) body.avatar_url = avatarDraft ?? '';
+      const res = await api.patch('/api/v1/auth/me', body);
+      updateUser({ display_name: displayName, avatar_url: res.data.avatar_url });
+      setAvatarDraft(undefined);
+      setSuccess('Profile updated.');
     } catch (err) {
       setError(err instanceof AxiosError ? err.response?.data?.detail || 'Failed to update profile' : 'Something went wrong');
     } finally {
@@ -49,18 +91,63 @@ function ProfileSection() {
   };
 
   return (
-    <form onSubmit={handleSave} className="space-y-4 rounded-2xl border border-border/60 bg-surface/40 p-6">
+    <form onSubmit={handleSave} className="space-y-5 rounded-2xl border border-border/60 bg-surface/40 p-6">
       <div>
         <h2 className="text-base font-semibold text-foreground">Profile</h2>
-        <p className="text-sm text-muted-foreground">This is the name your interview partners will see.</p>
+        <p className="text-sm text-muted-foreground">Your name and photo, as your interview partners see them.</p>
       </div>
+
+      <div className="flex items-center gap-4">
+        <Avatar name={displayName || 'Guest'} src={previewSrc} size={64} />
+        <div className="space-y-1.5">
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            className="hidden"
+            onChange={(e) => {
+              handleFileChosen(e.target.files?.[0]);
+              e.target.value = ''; // allow re-selecting the same file later
+            }}
+          />
+          <div className="flex gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => fileInputRef.current?.click()}
+              disabled={avatarBusy}
+            >
+              {avatarBusy ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <Upload className="mr-2 h-3.5 w-3.5" />}
+              {previewSrc ? 'Change photo' : 'Upload photo'}
+            </Button>
+            {previewSrc && (
+              <Button type="button" variant="ghost" size="sm" onClick={() => setAvatarDraft(null)}>
+                <X className="mr-1.5 h-3.5 w-3.5" />
+                Remove
+              </Button>
+            )}
+          </div>
+          <p className="text-xs text-muted-foreground">JPEG or PNG. You can drag and zoom to crop it.</p>
+        </div>
+      </div>
+
+      <AvatarCropDialog
+        imageSrc={rawImageSrc}
+        onCancel={() => setRawImageSrc(null)}
+        onConfirm={(dataUri) => {
+          setAvatarDraft(dataUri);
+          setRawImageSrc(null);
+        }}
+      />
+
       <div className="max-w-sm space-y-2">
         <label className="text-xs font-medium uppercase tracking-wider text-muted-foreground">Display name</label>
         <Input value={displayName} onChange={(e) => setDisplayName(e.target.value)} maxLength={100} required />
       </div>
       <FieldError message={error} />
       <FieldSuccess message={success} />
-      <Button type="submit" disabled={loading || !displayName.trim()}>
+      <Button type="submit" disabled={loading || avatarBusy || !displayName.trim()}>
         {loading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
         Save changes
       </Button>
@@ -196,12 +283,16 @@ function DangerZone() {
 }
 
 export default function AccountPage() {
-  const { user } = useAuth();
+  const { user, hasHydrated } = useAuth();
   const router = useRouter();
 
   useEffect(() => {
-    if (!user) router.replace('/');
-  }, [user, router]);
+    // Wait for zustand/persist to read localStorage before trusting a null
+    // user — see the comment on `hasHydrated` in store/useAuth.ts. Without
+    // this, a hard reload or direct link to this page bounced a real,
+    // logged-in visitor to `/dashboard` instead of showing settings.
+    if (hasHydrated && !user) router.replace('/');
+  }, [user, hasHydrated, router]);
 
   if (!user) return null;
 

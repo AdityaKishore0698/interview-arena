@@ -151,6 +151,30 @@ async def websocket_endpoint(
                             }
                         }
                         await manager.publish_event(session_id, chat_msg)
+                elif msg.get("type") == "IMAGE_SHARE":
+                    payload = msg.get("payload", {})
+                    data_uri = payload.get("image")
+                    # Relayed exactly like chat — never written to Postgres or
+                    # Redis, so there's nothing to clean up once the interview
+                    # ends. ~2.7MB base64 (~2MB raw) caps a reasonably-sized
+                    # photo without letting an arbitrarily large payload
+                    # through the WS pipe and Redis pub/sub channel.
+                    if (
+                        isinstance(data_uri, str)
+                        and data_uri.startswith("data:image/")
+                        and len(data_uri) <= 2_800_000
+                    ):
+                        from datetime import UTC, datetime
+                        image_msg = {
+                            "type": "IMAGE_SHARE",
+                            "payload": {
+                                "id": str(uuid.uuid4()),
+                                "sender_id": user_id,
+                                "image": data_uri,
+                                "timestamp": datetime.now(UTC).isoformat(),
+                            }
+                        }
+                        await manager.publish_event(session_id, image_msg)
                 elif msg.get("type") == "SIGNAL":
                     payload = msg.get("payload", {})
                     # Add sender identity safely to signal

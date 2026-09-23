@@ -2,11 +2,13 @@
 
 import { useAuth } from '@/store/useAuth';
 import { Button } from '@/components/ui/button';
-import { LogOut, UserCog } from 'lucide-react';
+import { LogOut } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { ThemeToggle } from './ThemeToggle';
 
 import { api } from '@/lib/api';
+import { StreakBadge } from './StreakBadge';
+import { Avatar } from './Avatar';
 
 export default function Navbar() {
   const { user, logout } = useAuth();
@@ -37,21 +39,26 @@ export default function Navbar() {
 
       <div className="flex items-center gap-4 sm:gap-6">
         <ThemeToggle />
+        {user && <StreakBadge />}
         {user && (
           <div className="flex items-center gap-4 border-l border-border/60 pl-4 sm:pl-6">
-            <div className="hidden flex-col items-end leading-none sm:flex">
-              <span className="text-sm font-medium text-foreground">{user.display_name || 'Guest'}</span>
-              <span className="mt-1 text-[10px] uppercase tracking-wider text-muted-foreground">{user.type}</span>
-            </div>
-            <Button
-              variant="ghost"
-              size="icon"
-              onClick={() => router.push('/account')}
-              title="Account Settings"
-              className="rounded-full text-muted-foreground transition-all hover:bg-surface hover:text-foreground"
+            <button
+              type="button"
+              onClick={() => router.push('/profile')}
+              title="View profile"
+              className="hidden flex-col items-end leading-none sm:flex"
             >
-              <UserCog className="h-4 w-4" />
-            </Button>
+              <span className="text-sm font-medium text-foreground hover:text-primary hover:underline">{user.display_name || 'Guest'}</span>
+              <span className="mt-1 text-[10px] uppercase tracking-wider text-muted-foreground">{user.type}</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => router.push('/profile')}
+              title="View profile"
+              className="rounded-full ring-offset-2 ring-offset-background transition-all hover:ring-2 hover:ring-primary/40"
+            >
+              <Avatar name={user.display_name || 'Guest'} src={user.avatar_url} size={32} />
+            </button>
             <Button
               variant="ghost"
               size="icon"

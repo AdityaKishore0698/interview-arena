@@ -12,15 +12,16 @@ import { Button } from '@/components/ui/button';
 import { SessionHeader } from '@/components/interview/SessionHeader';
 import { InterviewWorkspace } from '@/components/interview/InterviewWorkspace';
 import { FeedbackForm } from '@/components/interview/FeedbackForm';
-import { ChatPanel, type ChatMessage } from '@/components/interview/ChatPanel';
+import { ChatPanel, type ChatMessage, type SharedImage } from '@/components/interview/ChatPanel';
 import { VideoPanel } from '@/components/interview/VideoPanel';
 import { useWebRTC, type RtcSignal } from '@/hooks/useWebRTC';
 
 interface SessionProblem {
-  id: string;
+  id: string | null;
   title: string;
   prompt: string;
-  difficulty: string;
+  difficulty: string | null;
+  custom?: boolean;
 }
 
 interface SessionFeedback {
@@ -38,6 +39,8 @@ interface SessionRound {
   roles: Record<string, string>;
   problem?: SessionProblem | null;
   feedbacks?: SessionFeedback[];
+  submitted_code?: string | null;
+  submitted_language?: string | null;
 }
 
 interface SessionRoom {
@@ -120,6 +123,9 @@ export default function InterviewPage() {
   const [wsStatus, setWsStatus] = useState<'CONNECTING' | 'CONNECTED' | 'RECONNECTING'>('CONNECTING');
   const [opponentConnected, setOpponentConnected] = useState<boolean | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  // Ephemeral by design — pure WS relay, never persisted anywhere (not even
+  // localStorage), so this naturally empties on reload or when the tab closes.
+  const [sharedImages, setSharedImages] = useState<SharedImage[]>([]);
   const wsRef = useRef<WebSocket | null>(null);
 
   const { data: session, isLoading, error, refetch } = useQuery<SessionData>({
@@ -207,6 +213,7 @@ export default function InterviewPage() {
                 'SESSION_COMPLETED',
                 'SESSION_ABANDONED',
                 'SESSION_UPDATED',
+                'CODE_SUBMITTED',
               ].includes(ev)
             ) {
               refetchRef.current();
@@ -223,6 +230,14 @@ export default function InterviewPage() {
             // Exactly one rendered message per logical message — dedupe on the
             // server-minted id so our own echo and any reconnect replay collapse.
             setChatMessages((prev) => (prev.some((m) => m.id === msg.id) ? prev : [...prev, msg]));
+          } else if (data.type === 'IMAGE_SHARE') {
+            const img: SharedImage = {
+              id: data.payload.id,
+              senderId: data.payload.sender_id,
+              image: data.payload.image,
+              timestamp: data.payload.timestamp,
+            };
+            setSharedImages((prev) => (prev.some((m) => m.id === img.id) ? prev : [...prev, img]));
           } else if (data.type === 'SIGNAL') {
             if (data.payload.sender_id !== selfIdRef.current) {
               handleSignalRef.current(data.payload.signal as RtcSignal);
@@ -273,6 +288,12 @@ export default function InterviewPage() {
   const sendMessage = useCallback((text: string) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'CHAT_MESSAGE', payload: { text } }));
+    }
+  }, []);
+
+  const sendImage = useCallback((dataUri: string) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'IMAGE_SHARE', payload: { image: dataUri } }));
     }
   }, []);
 
@@ -435,6 +456,15 @@ export default function InterviewPage() {
                 role={role}
                 isPreparation={isPreparation}
                 problem={currentRound?.problem ?? null}
+                // The backend resolves picking for both registered rounds
+                // (a real row) and guest rounds (their Redis session), so
+                // this is passed unconditionally now.
+                sessionId={sessionId}
+                roundId={currentRound?.id}
+                onProblemSelected={refetch}
+                submittedCode={currentRound?.submitted_code}
+                submittedLanguage={currentRound?.submitted_language}
+                onCodeSubmitted={refetch}
               />
             )}
           </div>
@@ -457,7 +487,13 @@ export default function InterviewPage() {
                 onToggleVideo={webrtc.toggleVideo}
               />
               <div className="flex min-h-0 flex-1 flex-col">
-                <ChatPanel messages={chatMessages} onSendMessage={sendMessage} currentUser={user} />
+                <ChatPanel
+                  messages={chatMessages}
+                  onSendMessage={sendMessage}
+                  currentUser={user}
+                  sharedImages={sharedImages}
+                  onSendImage={sendImage}
+                />
               </div>
             </div>
           )}
